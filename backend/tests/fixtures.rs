@@ -10,13 +10,23 @@ use containers::model::{
 };
 use containers::paths::Checkout;
 
-/// Loads `paths` of the fixture `case` in the primary checkout, checks it loads without errors,
-/// and gives the paths it read.
-fn load(case: &str, paths: &[&str]) -> (Project, Vec<String>) {
+/// The project name of a Compose file at the root of the primary checkout: the folder's name,
+/// which the backend can't see there.
+const ROOT: (&str, NameOrigin) = ("", NameOrigin::Folder);
+
+/// Loads `paths` of the fixture `case` in the primary checkout, checks it loads without errors and
+/// gets the project name `name` (its value and origin), and gives the paths it read.
+fn load(case: &str, paths: &[&str], name: (&str, NameOrigin)) -> (Project, Vec<String>) {
     let files = support::fixture(case);
     let paths: Vec<String> = paths.iter().map(|path| path.to_string()).collect();
     let project = load_project(&files, &Checkout::primary(), &paths);
     assert!(project.errors.is_empty(), "{case}: {:?}", project.errors);
+    let project_name = &project.model.project_name;
+    assert_eq!(
+        (project_name.value.as_str(), project_name.origin),
+        name,
+        "{case}"
+    );
     (project, files.reads())
 }
 
@@ -103,12 +113,9 @@ fn unresolved(project: &Project) -> Vec<&str> {
 
 #[test]
 fn root_file() {
-    let (project, reads) = load("root-file", &["compose.yaml"]);
+    let (project, reads) = load("root-file", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["web", "db"]);
-    // At the root of the primary checkout the project folder's name can't be seen.
-    let name = &project.model.project_name;
-    assert_eq!((name.value.as_str(), name.origin), ("", NameOrigin::Folder));
 
     let web = service(&project, "web");
     assert_eq!(web.build.as_ref().unwrap().context, ".");
@@ -140,14 +147,11 @@ fn root_file() {
 
 #[test]
 fn horus_like_subfolder() {
-    let (project, reads) = load("horus-like", &["infra/local/docker-compose.yml"]);
+    // The name comes from the file's folder, infra/local.
+    let name = ("local", NameOrigin::Folder);
+    let (project, reads) = load("horus-like", &["infra/local/docker-compose.yml"], name);
     // versions.env sits next to the stack and is never read.
     assert_eq!(reads, ["infra/local/docker-compose.yml"]);
-    let name = &project.model.project_name;
-    assert_eq!(
-        (name.value.as_str(), name.origin),
-        ("local", NameOrigin::Folder)
-    );
     assert_eq!(names(&project), ["db"]);
 
     let db = service(&project, "db");
@@ -203,7 +207,11 @@ fn horus_like_subfolder() {
 
 #[test]
 fn several_files() {
-    let (project, reads) = load("several-files", &["compose.yaml", "compose.override.yaml"]);
+    let (project, reads) = load(
+        "several-files",
+        &["compose.yaml", "compose.override.yaml"],
+        ROOT,
+    );
     assert_eq!(reads, ["compose.yaml", "compose.override.yaml"]);
     assert_eq!(project.model.files, reads);
     assert_eq!(names(&project), ["api"]);
@@ -226,7 +234,7 @@ fn several_files() {
 
 #[test]
 fn profiles() {
-    let (project, reads) = load("profiles", &["compose.yaml"]);
+    let (project, reads) = load("profiles", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["app", "debug"]);
     let app = service(&project, "app");
@@ -239,7 +247,7 @@ fn profiles() {
 
 #[test]
 fn env_files_are_never_read() {
-    let (project, reads) = load("env-files", &["compose.yaml"]);
+    let (project, reads) = load("env-files", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["app"]);
     let app = service(&project, "app");
@@ -251,7 +259,7 @@ fn env_files_are_never_read() {
 
 #[test]
 fn host_app() {
-    let (project, reads) = load("host-app", &["compose.yaml"]);
+    let (project, reads) = load("host-app", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["db"]);
     let db = service(&project, "db");
@@ -264,7 +272,7 @@ fn host_app() {
 
 #[test]
 fn container_name() {
-    let (project, reads) = load("container-name", &["compose.yaml"]);
+    let (project, reads) = load("container-name", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["db"]);
     let db = service(&project, "db");
@@ -287,7 +295,7 @@ fn container_name() {
 
 #[test]
 fn external_volumes() {
-    let (project, reads) = load("external-volumes", &["compose.yaml"]);
+    let (project, reads) = load("external-volumes", &["compose.yaml"], ROOT);
     assert_eq!(reads, ["compose.yaml"]);
     assert_eq!(names(&project), ["app"]);
     let app = service(&project, "app");
@@ -336,7 +344,7 @@ fn external_volumes() {
 
 #[test]
 fn include_and_extends() {
-    let (project, reads) = load("include-extends", &["compose.yaml"]);
+    let (project, reads) = load("include-extends", &["compose.yaml"], ROOT);
     let order = ["compose.yaml", "services/worker.yml", "common/base.yml"];
     assert_eq!(reads, order);
     assert_eq!(project.model.files, order);
