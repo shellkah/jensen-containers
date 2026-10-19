@@ -5,15 +5,19 @@ use jensen_plugin_backend::Backend;
 pub mod compose;
 pub mod files;
 pub mod interpolate;
+pub mod methods;
 pub mod model;
 pub mod paths;
 pub mod short_syntax;
 pub mod source;
 pub mod yaml;
 
-/// Adds the backend's methods. There are none yet: the next changes register `analyze`, `topology`
-/// and `readiness` here.
-pub fn register(_backend: &mut Backend) {}
+/// Registers the backend's methods: `analyze`, which loads Compose files into the project model.
+pub fn register(backend: &mut Backend) {
+    backend.method("analyze", |input| {
+        methods::analyze_method(&files::HostFiles, input)
+    });
+}
 
 jensen_plugin_backend::export!(register);
 

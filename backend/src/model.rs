@@ -342,4 +342,141 @@ mod tests {
             json!("f")
         );
     }
+
+    /// The shared contract sample: `test/fixtures/analyze-sample.json` and the TypeScript literal in
+    /// `test/backend.test.ts` say the same thing, so Rust, TypeScript and the file must all agree.
+    fn sample() -> AnalyzeResult {
+        let source = |line, column| SourceRef {
+            file: "infra/local/docker-compose.yml".into(),
+            line,
+            column,
+        };
+        let span = Span { from: 412, to: 429 };
+        AnalyzeResult {
+            model: ProjectModel {
+                project_name: ProjectName {
+                    value: "local".into(),
+                    origin: NameOrigin::Folder,
+                },
+                files: vec!["infra/local/docker-compose.yml".into()],
+                services: vec![
+                    ServiceNode {
+                        name: "db".into(),
+                        image: Some("postgres:16".into()),
+                        build: Some(Build {
+                            context: "infra/local".into(),
+                            dockerfile: Some("Dockerfile.db".into()),
+                        }),
+                        ports: vec![PortBinding {
+                            host_ip: Some("127.0.0.1".into()),
+                            host: Some("5432".into()),
+                            container: "5432".into(),
+                            protocol: Some("tcp".into()),
+                            fixed: true,
+                            source: source(20, 8),
+                            span: span.clone(),
+                        }],
+                        volumes: vec![
+                            VolumeMount {
+                                kind: MountKind::Named,
+                                source: Some("data".into()),
+                                target: "/var/lib/postgresql/data".into(),
+                                read_only: false,
+                            },
+                            VolumeMount {
+                                kind: MountKind::Bind,
+                                source: Some("./init".into()),
+                                target: "/docker-entrypoint-initdb.d".into(),
+                                read_only: true,
+                            },
+                        ],
+                        networks: vec!["backnet".into()],
+                        depends_on: vec![],
+                        container_name: Some("app-db".into()),
+                        profiles: vec!["dev".into()],
+                        source: source(12, 2),
+                    },
+                    ServiceNode {
+                        name: "app".into(),
+                        image: None,
+                        build: None,
+                        ports: vec![],
+                        volumes: vec![],
+                        networks: vec![],
+                        depends_on: vec!["db".into()],
+                        container_name: None,
+                        profiles: vec![],
+                        source: source(30, 2),
+                    },
+                ],
+                volumes: vec![ResourceNode {
+                    name: "data".into(),
+                    fixed_name: Some("app-data".into()),
+                    external: false,
+                    source: source(40, 2),
+                }],
+                networks: vec![ResourceNode {
+                    name: "backnet".into(),
+                    fixed_name: None,
+                    external: true,
+                    source: source(44, 2),
+                }],
+                edges: vec![
+                    Edge {
+                        from: "app".into(),
+                        to: "db".into(),
+                        kind: EdgeKind::DependsOn,
+                    },
+                    Edge {
+                        from: "db".into(),
+                        to: "backnet".into(),
+                        kind: EdgeKind::Network,
+                    },
+                    Edge {
+                        from: "db".into(),
+                        to: "data".into(),
+                        kind: EdgeKind::Volume,
+                    },
+                    Edge {
+                        from: "app".into(),
+                        to: "db".into(),
+                        kind: EdgeKind::Links,
+                    },
+                ],
+            },
+            findings: vec![Finding {
+                rule: RuleId::FixedHostPort,
+                service: Some("db".into()),
+                message:
+                    "db publishes host port 5432, so a second copy of this project can't start."
+                        .into(),
+                affects: vec![Affects::Agents, Affects::ByHand],
+                lead: false,
+                source: source(20, 8),
+                span: Some(span.clone()),
+                edit: Some(TextEdit {
+                    file: "infra/local/docker-compose.yml".into(),
+                    span,
+                    new_text: "\"127.0.0.1:${DB_PORT:-5432}:5432\"".into(),
+                    title: "Make db's host port configurable".into(),
+                }),
+            }],
+            unresolved: vec![Unresolved {
+                variable: "PG_MAJOR".into(),
+                source: source(14, 20),
+            }],
+            errors: vec![LoadError {
+                file: "infra/local/extra.yml".into(),
+                message: "no such file".into(),
+                source: Some(source(3, 4)),
+            }],
+        }
+    }
+
+    #[test]
+    fn serializes_to_the_shared_sample() {
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("../../test/fixtures/analyze-sample.json")).unwrap();
+        assert_eq!(serde_json::to_value(sample()).unwrap(), file);
+    }
 }
