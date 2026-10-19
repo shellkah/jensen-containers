@@ -768,6 +768,139 @@ fn several_files_merge_in_order() {
     assert_eq!(&later[external.value.clone()], "true");
 }
 
+/// Loads `paths` from `files` in the primary checkout, as `-f` files, checking it loads without
+/// errors.
+fn loaded<const N: usize>(files: [(&str, &str); N], paths: &[&str]) -> Project {
+    let files = MemFiles::from(files);
+    let paths: Vec<String> = paths.iter().map(|path| path.to_string()).collect();
+    let project = load_project(&files, &Checkout::primary(), &paths);
+    assert!(project.errors.is_empty(), "{:?}", project.errors);
+    project
+}
+
+fn service<'p>(project: &'p Project, name: &str) -> &'p ServiceNode {
+    project
+        .model
+        .services
+        .iter()
+        .find(|service| service.name == name)
+        .unwrap()
+}
+
+#[test]
+fn list_and_mapping_forms_merge_into_one_mapping() {
+    let defined = "  db: {}\n  cache: {}\nnetworks:\n  front:\n  back:\n";
+    let listed = "services:\n  web:\n    depends_on: [db]\n    networks: [front]\n";
+    let mapped = "services:\n  web:\n    depends_on: {cache: {condition: service_started}}\n    networks: {back: {}}\n";
+    let names = |service: &ServiceNode| (service.depends_on.clone(), service.networks.clone());
+
+    // A list first, then a mapping, under -f.
+    let base = format!("{listed}{defined}");
+    let project = loaded(
+        [("compose.yaml", base.as_str()), ("override.yaml", mapped)],
+        &["compose.yaml", "override.yaml"],
+    );
+    assert_eq!(
+        names(service(&project, "web")),
+        (
+            vec!["db".into(), "cache".into()],
+            vec!["front".into(), "back".into()]
+        )
+    );
+
+    // A mapping first, then a list.
+    let base = format!("{mapped}{defined}");
+    let project = loaded(
+        [("compose.yaml", base.as_str()), ("override.yaml", listed)],
+        &["compose.yaml", "override.yaml"],
+    );
+    assert_eq!(
+        names(service(&project, "web")),
+        (
+            vec!["cache".into(), "db".into()],
+            vec!["back".into(), "front".into()]
+        )
+    );
+
+    // Both orders under extends; a list item is interpolated before it is a name.
+    let text = "services:\n  listed:\n    depends_on: [db]\n    networks: [front]\n  mapped:\n    depends_on: {cache: {condition: service_started}}\n    networks: {back: {}}\n  web:\n    extends: listed\n    depends_on: {cache: {condition: service_started}}\n    networks: {back: {}}\n  api:\n    extends: mapped\n    depends_on: [\"${DB:-db}\"]\n    networks: [front]\n  db: {}\n  cache: {}\nnetworks:\n  front:\n  back:\n";
+    let project = loaded([("compose.yaml", text)], &["compose.yaml"]);
+    assert_eq!(
+        names(service(&project, "web")),
+        (
+            vec!["db".into(), "cache".into()],
+            vec!["front".into(), "back".into()]
+        )
+    );
+    assert_eq!(
+        names(service(&project, "api")),
+        (
+            vec!["cache".into(), "db".into()],
+            vec!["back".into(), "front".into()]
+        )
+    );
+}
+
+#[test]
+fn a_long_port_written_in_another_order_is_the_same_port() {
+    let first =
+        "services:\n  web:\n    ports:\n      - {target: 80, published: \"8080\", protocol: tcp}\n";
+    let later = "services:\n  web:\n    ports:\n      - protocol: tcp\n        published: \"8080\"\n        target: 80\n";
+    let project = loaded(
+        [("compose.yaml", first), ("override.yaml", later)],
+        &["compose.yaml", "override.yaml"],
+    );
+    let web = service(&project, "web");
+    assert_eq!(ports_of(web), [(Some("8080"), "compose.yaml", 3, 32)]);
+    assert_eq!(project.facts.ports.len(), 1);
+}
+
+#[test]
+fn volumes_merge_by_their_target() {
+    let mount = |kind, source: &str, target: &str| VolumeMount {
+        kind,
+        source: Some(source.into()),
+        target: target.into(),
+        read_only: false,
+    };
+    // A later mount on a target takes the earlier one's place; a new target comes after.
+    let first = "services:\n  web:\n    volumes:\n      - data:/data\n      - ./x:/x\n      - cache:/cache\nvolumes:\n  data:\n  cache:\n  more:\n";
+    let later = "services:\n  web:\n    volumes:\n      - ./local:/data\n      - {type: bind, source: ./y, target: /x}\n      - more:/more\n      - cache:/cache\n";
+    let project = loaded(
+        [("compose.yaml", first), ("override.yaml", later)],
+        &["compose.yaml", "override.yaml"],
+    );
+    assert_eq!(
+        service(&project, "web").volumes,
+        [
+            mount(MountKind::Bind, "./local", "/data"),
+            mount(MountKind::Bind, "./y", "/x"),
+            mount(MountKind::Named, "cache", "/cache"),
+            mount(MountKind::Named, "more", "/more"),
+        ]
+    );
+    // The replaced mount is gone from the edges too.
+    let volumes: Vec<_> = project
+        .model
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Volume)
+        .map(|edge| edge.to.as_str())
+        .collect();
+    assert_eq!(volumes, ["cache", "more"]);
+
+    // The same under extends.
+    let text = "services:\n  base:\n    volumes: [\"data:/data\", \"./x:/x\"]\n  web:\n    extends: base\n    volumes: [\"./local:/data\"]\nvolumes:\n  data:\n";
+    let project = loaded([("compose.yaml", text)], &["compose.yaml"]);
+    assert_eq!(
+        service(&project, "web").volumes,
+        [
+            mount(MountKind::Bind, "./local", "/data"),
+            mount(MountKind::Bind, "./x", "/x"),
+        ]
+    );
+}
+
 #[test]
 fn include_paths_are_relative_to_the_including_file() {
     let files = RecordingFiles::new(MemFiles::from([
