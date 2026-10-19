@@ -284,7 +284,9 @@ impl<'a> Loader<'a> {
         read
     }
 
-    /// Reads `path` and parses it, reporting its variables.
+    /// Reads `path` and parses it, reporting its variables. A key written twice in one mapping is
+    /// an error on the second, which the tree leaves out with its value: Compose refuses the file,
+    /// and the rest of it still loads.
     fn read_once(&mut self, path: &str) -> Read {
         let text = match self.files.read(&self.checkout.read_path(path)) {
             Ok(text) => text,
@@ -296,9 +298,16 @@ impl<'a> Loader<'a> {
             .out
             .sources
             .get(file)
-            .map(|source| yaml::parse(file, &source.text));
+            .map(|source| yaml::parse_document(file, &source.text));
         match parsed {
-            Some(Ok(root)) => {
+            Some(Ok(yaml::Document { root, duplicates })) => {
+                for key in &duplicates {
+                    let name = key.as_str().unwrap_or_default();
+                    self.error_on(
+                        key,
+                        format!("{name} is written twice; Compose refuses this"),
+                    );
+                }
                 for (unresolved, use_) in variables(&self.out.sources, &root) {
                     self.out.unresolved.push(unresolved);
                     self.out.variables.push(use_);
@@ -403,7 +412,8 @@ impl<'a> Loader<'a> {
     }
 
     /// The entries of a top-level `services`, `volumes` or `networks` mapping whose names are text.
-    /// A name written twice is an error on the second, which is dropped.
+    /// A name written twice never gets here: the tree keeps the first, and reading the file
+    /// reported the second.
     fn definitions(&mut self, node: Option<&Node>, what: &str, folder: &str) -> Vec<Defined> {
         let Some(node) = node else {
             return Vec::new();
@@ -420,20 +430,11 @@ impl<'a> Loader<'a> {
             }
         };
         let mut defined = Vec::new();
-        let mut names = HashSet::new();
         for entry in entries {
             let Some(name) = entry.key.as_str() else {
                 self.error_on(&entry.key, format!("a {what} name must be text"));
                 continue;
             };
-            if !names.insert(name) {
-                let file = self.path(entry.key.file);
-                self.error_on(
-                    &entry.key,
-                    format!("{name} is defined twice in {file}; Compose refuses this"),
-                );
-                continue;
-            }
             defined.push(Defined {
                 name: name.to_owned(),
                 key: entry.key.clone(),

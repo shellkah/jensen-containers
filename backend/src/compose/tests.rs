@@ -1139,13 +1139,41 @@ fn a_name_written_twice_keeps_the_first() {
             ("compose.yaml", Some((7, 2)))
         ]
     );
+    // A name written twice is a key written twice: one rule for every mapping.
     assert_eq!(
         project.errors[0].message,
-        "a is defined twice in compose.yaml; Compose refuses this"
+        "a is written twice; Compose refuses this"
     );
     assert_eq!(service_names(&project), ["a"]);
     assert_eq!(project.model.services[0].image.as_deref(), Some("x"));
     assert_eq!(project.model.volumes.len(), 1);
+}
+
+#[test]
+fn a_key_written_twice_is_an_error_and_keeps_the_first() {
+    let text = "services:\n  a:\n    image: x\n    image: y\nservices:\n  b:\n    image: ${B}\nvolumes:\n  v:\n";
+    let project = one(text);
+    assert_eq!(
+        errors_at(&project),
+        [
+            ("compose.yaml", Some((3, 4))),
+            ("compose.yaml", Some((4, 0)))
+        ]
+    );
+    let messages: Vec<_> = project.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "image is written twice; Compose refuses this",
+            "services is written twice; Compose refuses this"
+        ]
+    );
+    // The first of each stays, and the rest of the file loads.
+    assert_eq!(service_names(&project), ["a"]);
+    assert_eq!(project.model.services[0].image.as_deref(), Some("x"));
+    assert_eq!(project.model.volumes.len(), 1);
+    // What the dropped block holds is gone with it, its variables too.
+    assert!(project.unresolved.is_empty(), "{:?}", project.unresolved);
 }
 
 #[test]

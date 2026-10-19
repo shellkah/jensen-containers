@@ -57,14 +57,30 @@ pub struct YamlError {
     pub at: usize,
 }
 
+/// A parsed document: its tree, and the keys the tree leaves out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Document {
+    pub root: Node,
+    /// Each key written again in a mapping that already has it, in text order.
+    pub duplicates: Vec<Node>,
+}
+
 /// Reads the first YAML document of `text` into a tree; an empty document, with or without a
 /// `---`, is `Null` at `0..0`.
 ///
 /// An alias is a copy of its anchored node, spans included, so they point where the anchor is
 /// written. A plain `<<` key whose value is a mapping, or a list of mappings, is replaced by their
 /// entries, appended after the mapping's own; keys the mapping already has are skipped, and in a
-/// list the earlier mappings win. Tags are ignored.
+/// list the earlier mappings win. A text key written again in the same mapping is left out with
+/// its value, so the first one is the mapping's; [`parse_document`] gives the keys left out. Tags
+/// are ignored, so `1` and `"1"` are the same key.
 pub fn parse(file: FileId, text: &str) -> Result<Node, YamlError> {
+    parse_document(file, text).map(|document| document.root)
+}
+
+/// [`parse`], with the keys written twice that the tree leaves out. A mapping copied by an alias
+/// reports its keys once, where it is written.
+pub fn parse_document(file: FileId, text: &str) -> Result<Document, YamlError> {
     let mut tree = Tree {
         file,
         text,
@@ -72,6 +88,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Node, YamlError> {
         anchors: HashMap::new(),
         made: Made::default(),
         root: None,
+        duplicates: Vec::new(),
     };
     for item in Parser::new_from_str(text) {
         let (event, span) = item.map_err(|error| scan_error(&error, text))?;
@@ -103,11 +120,17 @@ pub fn parse(file: FileId, text: &str) -> Result<Node, YamlError> {
     let root = tree
         .root
         .filter(|root| !(root.is_null() && root.span.is_empty()));
-    Ok(root.unwrap_or(Node {
-        file,
-        span: 0..0,
-        value: Value::Null,
-    }))
+    // Inner mappings close first; the keys are reported in the order they are written.
+    let mut duplicates = tree.duplicates;
+    duplicates.sort_by_key(|key| key.span.start);
+    Ok(Document {
+        root: root.unwrap_or(Node {
+            file,
+            span: 0..0,
+            value: Value::Null,
+        }),
+        duplicates,
+    })
 }
 
 impl Node {
@@ -167,6 +190,8 @@ struct Tree<'t> {
     anchors: HashMap<usize, (Node, Weight)>,
     made: Made,
     root: Option<Node>,
+    /// The keys left out because their mapping already has them.
+    duplicates: Vec<Node>,
 }
 
 /// What a node holds: its nodes, itself included, the bytes of its scalars, and its height.
@@ -322,7 +347,10 @@ impl Tree<'_> {
             Open::Seq(items) => Value::Seq(items),
             Open::Map {
                 entries, merges, ..
-            } => Value::Map(merge(entries, merges, &mut frame.weight)),
+            } => {
+                let entries = unique(entries, &mut frame.weight, &mut self.duplicates);
+                Value::Map(merge(entries, merges, &mut frame.weight))
+            }
         };
         // The parser ends a block collection where the next token starts, past any comments.
         let end = if frame.flow { bytes.end } else { frame.end };
@@ -417,6 +445,28 @@ fn is_merge_source(node: &Node) -> bool {
         Value::Seq(items) => items.iter().all(|item| matches!(item.value, Value::Map(_))),
         _ => false,
     }
+}
+
+/// A mapping's own entries without the ones whose text key an earlier entry has, each such key
+/// kept in `duplicates`; sheds from `weight` what leaves the tree. A key that isn't text is never
+/// a duplicate.
+fn unique(entries: Vec<Entry>, weight: &mut Weight, duplicates: &mut Vec<Node>) -> Vec<Entry> {
+    let mut keys = HashSet::new();
+    let mut kept = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry
+            .key
+            .as_str()
+            .is_none_or(|key| keys.insert(key.to_owned()))
+        {
+            kept.push(entry);
+        } else {
+            weight.shed(measure(&entry.key));
+            weight.shed(measure(&entry.value));
+            duplicates.push(entry.key);
+        }
+    }
+    kept
 }
 
 /// Appends the entries of the `<<` values after the mapping's own, skipping keys it already has,
@@ -760,6 +810,51 @@ mod tests {
         let c = root.get("c").unwrap();
         assert_eq!(at(text, c), "d: y");
         assert_eq!(source.source_ref(c.last_byte()).line, 3);
+    }
+
+    #[test]
+    fn a_key_written_twice_keeps_the_first() {
+        let text = "a: 1\nb:\n  c: x\n  c: y\na: 2\n\"b\": 3\nd: &d {k: 1, k: 2}\ne: *d\n? [x]\n: 1\n? [x]\n: 2\n";
+        let document = parse_document(0, text).unwrap();
+        let root = &document.root;
+        let keys: Vec<_> = root
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.key.as_str())
+            .collect();
+        assert_eq!(keys, ["a", "b", "d", "e"]);
+        assert_eq!(root.get("a").unwrap().as_str(), Some("1"));
+        let b = root.get("b").unwrap();
+        assert_eq!(b.entries().len(), 1);
+        assert_eq!(b.get("c").unwrap().as_str(), Some("x"));
+        // An alias copies the mapping without its duplicate, and doesn't report it again.
+        assert_eq!(root.get("e").unwrap().entries().len(), 1);
+        assert_eq!(root.get("e").unwrap().get("k").unwrap().as_str(), Some("1"));
+        // A key that isn't text is never a duplicate: both `[x]` keys stay.
+        assert_eq!(root.entries().len(), 6);
+        // Each dropped key, in text order; a quoted key is the same key as a plain one.
+        let dropped: Vec<_> = document
+            .duplicates
+            .iter()
+            .map(|key| at(text, key))
+            .collect();
+        assert_eq!(dropped, ["c", "a", "\"b\"", "k"]);
+        let starts: Vec<_> = document
+            .duplicates
+            .iter()
+            .map(|key| key.span.start)
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                text.find("c: y").unwrap(),
+                text.find("a: 2").unwrap(),
+                text.find("\"b\"").unwrap(),
+                text.find("k: 2").unwrap(),
+            ]
+        );
+        // `parse` keeps the same tree.
+        assert_eq!(&parse(0, text).unwrap(), root);
     }
 
     #[test]
