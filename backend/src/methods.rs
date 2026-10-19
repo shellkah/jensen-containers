@@ -28,7 +28,7 @@ pub fn analyze_method(files: &dyn ReadFile, input: Value) -> Result<Value, Strin
         .ok_or("files must be a list of Compose file paths")?;
     let paths = paths
         .into_iter()
-        .map(normalize)
+        .map(file_path)
         .collect::<Result<Vec<_>, _>>()?;
     let checkout = match input.get("checkout") {
         None | Some(Value::Null) => None,
@@ -40,12 +40,23 @@ pub fn analyze_method(files: &dyn ReadFile, input: Value) -> Result<Value, Strin
         .map_err(|error| format!("the result can't be written as json: {error}"))
 }
 
+/// A file path from the input, normalized. One that leaves the checkout is refused, and so is one
+/// that names the checkout root itself (`""`, `.`), which would read the folder.
+fn file_path(written: &str) -> Result<String, String> {
+    match normalize(written)? {
+        path if path.is_empty() => Err(format!(
+            "{written:?} names the checkout root, not a Compose file"
+        )),
+        path => Ok(path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::files::MemFiles;
+    use crate::files::{MemFiles, RecordingFiles};
 
     #[test]
     fn analyze_method_reads_the_given_files() {
@@ -79,6 +90,9 @@ mod tests {
             json!({ "files": "x" }),
             json!({ "files": [1] }),
             json!({ "files": ["../x.yml"] }),
+            json!({ "files": [""] }),
+            json!({ "files": ["."] }),
+            json!({ "files": ["compose.yaml", "./"] }),
             json!({ "files": [], "checkout": "/abs" }),
             json!({ "files": [], "checkout": 3 }),
         ] {
@@ -91,5 +105,24 @@ mod tests {
             analyze_method(&files, json!({})).unwrap_err(),
             "files must be a list of Compose file paths"
         );
+        // A path that names the checkout root would read the folder.
+        assert_eq!(
+            analyze_method(&files, json!({ "files": ["."] })).unwrap_err(),
+            "\".\" names the checkout root, not a Compose file"
+        );
+    }
+
+    #[test]
+    fn analyze_method_lists_a_file_that_isnt_yaml_as_an_error() {
+        let files = RecordingFiles::new(MemFiles::from([(".env", "SECRET=1\n")]));
+        let reply = analyze_method(&files, json!({ "files": [".env"] })).unwrap();
+        assert_eq!(
+            reply["errors"],
+            json!([{
+                "file": ".env",
+                "message": ".env is not a Compose file: only .yaml and .yml files are read"
+            }])
+        );
+        assert!(files.reads().is_empty(), "{:?}", files.reads());
     }
 }

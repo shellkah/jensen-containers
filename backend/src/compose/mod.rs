@@ -38,8 +38,10 @@ pub struct Project {
 /// -f b` would: in order, each merged over the ones before, following `include` and `extends`.
 /// Every read goes through `checkout`, and every path the result reports is relative to the
 /// checkout root; `model.files` lists the files read, in reading order. A path that leaves the
-/// checkout, a file that can't be read, an include or extends that can't be followed, and a part
-/// of a file that has the wrong shape are [`LoadError`]s, and the rest still loads.
+/// checkout or isn't a `.yaml` or `.yml` file (never read), a file that can't be read, an include
+/// or extends that can't be followed, and a part of a file that has the wrong shape are
+/// [`LoadError`]s, and the rest still loads. A `LoadError`'s source, when it has one, is in its
+/// `file`.
 pub fn load_project(files: &dyn ReadFile, checkout: &Checkout, paths: &[String]) -> Project {
     let loaded = load::Loader::new(files, checkout).project(paths);
     build::project(loaded, checkout)

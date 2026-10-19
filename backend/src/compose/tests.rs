@@ -1351,6 +1351,51 @@ fn paths_outside_the_checkout_are_refused() {
 }
 
 #[test]
+fn only_yaml_files_are_read() {
+    let files = RecordingFiles::new(MemFiles::from([
+        (
+            "compose.yaml",
+            "include: [.env, {path: [db.yml, settings.json]}]\nservices:\n  web:\n    extends: {file: x.env, service: base}\n    image: web\n  api:\n    extends: {file: base.yml, service: base}\n",
+        ),
+        ("db.yml", "services:\n  db:\n    image: db\n"),
+        ("base.yml", "services:\n  base:\n    image: base\n"),
+        (".env", "SECRET=1\n"),
+        ("x.env", "services: {}\n"),
+        ("settings.json", "{}\n"),
+        ("Compose", "services: {}\n"),
+    ]));
+    let paths = ["compose.yaml", ".env", "Compose"].map(String::from);
+    let project = load_project(&files, &Checkout::primary(), &paths);
+    // Nothing but a .yaml or .yml file is ever asked for.
+    assert_eq!(files.reads(), ["compose.yaml", "db.yml", "base.yml"]);
+    assert_eq!(
+        errors_at(&project),
+        [
+            ("compose.yaml", Some((0, 10))),
+            ("compose.yaml", Some((0, 32))),
+            ("compose.yaml", Some((3, 20))),
+            (".env", None),
+            ("Compose", None),
+        ]
+    );
+    let messages: Vec<_> = project.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            ".env is not a Compose file: only .yaml and .yml files are read",
+            "settings.json is not a Compose file: only .yaml and .yml files are read",
+            "x.env is not a Compose file: only .yaml and .yml files are read",
+            ".env is not a Compose file: only .yaml and .yml files are read",
+            "Compose is not a Compose file: only .yaml and .yml files are read",
+        ]
+    );
+    // The rest loads.
+    assert_eq!(service_names(&project), ["web", "api", "db"]);
+    assert_eq!(service(&project, "web").image.as_deref(), Some("web"));
+    assert_eq!(service(&project, "api").image.as_deref(), Some("base"));
+}
+
+#[test]
 fn a_checkout_prefixes_reads_but_not_reported_paths() {
     let files = RecordingFiles::new(MemFiles::from([
         (

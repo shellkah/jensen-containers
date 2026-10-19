@@ -149,6 +149,17 @@ fn without_extends(service: &Node) -> (Node, Option<Node>) {
     (own, extends)
 }
 
+/// Whether `path` names a file the backend reads: only `.yaml` and `.yml` files are, so a path in
+/// a Compose file never makes it ask Jensen for an env file or anything else.
+fn compose_file(path: &str) -> bool {
+    path.ends_with(".yaml") || path.ends_with(".yml")
+}
+
+/// Why the file `path` names isn't read.
+fn not_compose(path: &str) -> String {
+    format!("{path} is not a Compose file: only .yaml and .yml files are read")
+}
+
 /// Why `what` isn't merged in: copying it would pass [`MAX_COPIED`].
 fn too_large(what: &str) -> String {
     format!(
@@ -223,13 +234,22 @@ impl<'a> Loader<'a> {
     }
 
     /// Loads `paths`, relative to the checkout root, in order, merged like `docker compose -f`.
-    /// A path given twice loads once.
+    /// A path given twice loads once. A path that leaves the checkout, or isn't a `.yaml` or
+    /// `.yml` file, is an error and is never read.
     pub fn project(mut self, paths: &[String]) -> Loaded {
         let mut config = Config::default();
         let mut given = HashSet::new();
         for written in paths {
             let path = match normalize(written) {
-                Ok(path) => path,
+                Ok(path) if compose_file(&path) => path,
+                Ok(path) => {
+                    self.report(LoadError {
+                        message: not_compose(&path),
+                        file: path,
+                        source: None,
+                    });
+                    continue;
+                }
                 Err(message) => {
                     self.report(LoadError {
                         file: written.clone(),
@@ -622,8 +642,8 @@ impl<'a> Loader<'a> {
     }
 
     /// The path `written` names, as written and resolved against `folder` relative to the
-    /// checkout root. An empty path, one naming the checkout root, and one leaving the checkout
-    /// are errors on it.
+    /// checkout root. An empty path, one naming the checkout root, one leaving the checkout, and
+    /// one that isn't a `.yaml` or `.yml` file are errors on it, so they are never read.
     fn target(&mut self, written: &Node, folder: &str) -> Option<(String, String)> {
         let Some(text) = value(Some(written)) else {
             let message = match written.value {
@@ -636,6 +656,10 @@ impl<'a> Loader<'a> {
         match join(folder, &text) {
             Ok(path) if path.is_empty() => {
                 self.error_on(written, format!("{text} is a folder, not a Compose file"));
+                None
+            }
+            Ok(path) if !compose_file(&path) => {
+                self.error_on(written, not_compose(&text));
                 None
             }
             Ok(path) => Some((text, path)),
