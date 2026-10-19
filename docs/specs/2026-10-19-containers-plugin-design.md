@@ -473,7 +473,7 @@ Answered on 2026-10-19:
 Still open:
 - Does Run pass anything else to a Compose stack, such as environment variables for the session's port band? The relayed command suggests not, which makes R5 essential.
 
-The brainstorm mockups are in `docs/superpowers/specs/2026-10-19-containers-mockups/`. They are HTML fragments written for the brainstorm's preview frame, so opened on their own they render with rough styling.
+The brainstorm mockups are in `docs/specs/2026-10-19-containers-mockups/`. They are HTML fragments written for the brainstorm's preview frame, so opened on their own they render with rough styling.
 - `layout.html`: the three layouts.
 - `layout-v2.html`: the two combined layouts.
 - `attention.html`: the chosen layout with the alerts. Its port tooltip is superseded by 6.4.
