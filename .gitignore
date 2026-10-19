@@ -1,0 +1,7 @@
+node_modules
+main.js
+release
+backend.wasm
+backend/target
+# Jensen canvases are not tracked. Delete the next line to commit them.
+/architecture/
