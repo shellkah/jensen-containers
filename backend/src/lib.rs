@@ -4,6 +4,7 @@ use jensen_plugin_backend::Backend;
 
 pub mod interpolate;
 pub mod model;
+pub mod short_syntax;
 pub mod source;
 pub mod yaml;
 
