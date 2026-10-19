@@ -1,0 +1,189 @@
+<style>
+  .cx-legend { display:flex; gap:1.1rem; flex-wrap:wrap; font-size:.8rem; color:var(--text-secondary); margin:-.5rem 0 1.25rem }
+  .cx-dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:-1px }
+  .cx-ok { background:var(--success) } .cx-warn { background:var(--warning) } .cx-err { background:var(--error) }
+  .cx-offdot { border:1.5px dashed var(--text-tertiary); background:transparent }
+  .cx-stopdot { border:1.5px solid var(--text-tertiary); background:transparent }
+  .cx-sharedot { background:var(--accent) }
+  .cx-extradot { border:1.5px dashed var(--warning); background:transparent }
+  .cx-frame { border:1px solid var(--border); border-radius:10px; background:var(--bg-secondary); overflow:hidden; text-align:left }
+  .cx-toolbar { display:flex; align-items:center; gap:10px; padding:7px 12px; border-bottom:1px solid var(--border); font-size:.74rem; color:var(--text-secondary) }
+  .cx-toolbar b { color:var(--text-primary); font-size:.8rem }
+  .cx-pill { font-size:.66rem; padding:2px 8px; border-radius:10px; background:var(--bg-tertiary); color:var(--text-secondary); white-space:nowrap }
+  .cx-pill.warn { background:rgba(255,159,10,.16); color:var(--warning) }
+  .cx-pill.work { background:rgba(52,199,89,.18); color:var(--success) }
+  .cx-pill.gone { background:rgba(255,59,48,.14); color:var(--error) }
+  .cx-body { display:grid; grid-template-columns:1fr 230px }
+  .cx-body3 { display:grid; grid-template-columns:200px 1fr 230px }
+  .cx-maparea { padding:8px 10px; min-width:0 }
+  .cx-maplabel { font-size:.66rem; color:var(--text-tertiary); padding:2px 2px 4px }
+  .cx-drawer { border-left:1px solid var(--border); padding:12px 13px; font-size:.72rem; color:var(--text-secondary); line-height:1.45; background:var(--bg-primary) }
+  .cx-drawer h4 { font-size:.82rem; color:var(--text-primary); margin-bottom:2px }
+  .cx-drawer .cx-err-line { color:var(--error); font-weight:600 }
+  .cx-drawer code { font-size:.68rem; background:var(--bg-tertiary); padding:1px 4px; border-radius:4px; color:var(--text-primary) }
+  .cx-btns { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px }
+  .cx-btn { font-size:.68rem; padding:3px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); white-space:nowrap }
+  .cx-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff }
+  table.cx-grid { width:100%; border-collapse:collapse; font-size:.72rem }
+  .cx-grid th { font-weight:500; color:var(--text-tertiary); font-size:.66rem; text-align:center; padding:5px 4px; border-bottom:1px solid var(--border) }
+  .cx-grid th:first-child, .cx-grid td:first-child { text-align:left; padding-left:12px }
+  .cx-grid td { text-align:center; padding:6px 4px; border-bottom:1px solid var(--border); color:var(--text-secondary) }
+  .cx-grid tr.sel td { background:var(--selected-bg) }
+  .cx-grid tr.sel td:first-child { box-shadow:inset 3px 0 0 var(--accent) }
+  .cx-grid tr.dim td { opacity:.6 }
+  .cx-grid td.cell-sel { outline:2px solid var(--accent); outline-offset:-3px; border-radius:6px }
+  .cx-rowhead b { color:var(--text-primary); font-size:.74rem }
+  .cx-rowhead span.sub { color:var(--text-tertiary); font-size:.66rem; margin-left:4px }
+  .cx-acts { white-space:nowrap; text-align:right !important; padding-right:10px !important }
+  .cx-ico { display:inline-block; font-size:.62rem; padding:1px 6px; border:1px solid var(--border); border-radius:5px; color:var(--text-secondary); margin-left:3px }
+  .cx-gridwrap { border-top:1px solid var(--border) }
+  .cx-list { border-right:1px solid var(--border); background:var(--bg-primary) }
+  .cx-item { padding:9px 12px; border-bottom:1px solid var(--border); font-size:.7rem; color:var(--text-secondary); line-height:1.4 }
+  .cx-item b { color:var(--text-primary); font-size:.76rem }
+  .cx-item.sel { background:var(--selected-bg); box-shadow:inset 3px 0 0 var(--accent) }
+  .cx-item.dim { opacity:.6 }
+  .cx-item .issue { color:var(--error) }
+  .cx-item .dots { margin-top:4px; display:flex; gap:3px }
+  .cx-item .dots .cx-dot { width:8px; height:8px }
+  .card-image.cx-img { aspect-ratio:auto; display:block; padding:14px; background:var(--bg-tertiary) }
+  .cx-svg text { font-family:system-ui,-apple-system,sans-serif }
+  .cx-rec { display:inline-block; font-size:.66rem; font-weight:600; padding:2px 8px; border-radius:10px; background:var(--accent); color:#fff; margin-left:6px; vertical-align:2px }
+</style>
+
+<h2>Two ways to combine them</h2>
+<p class="subtitle">Both keep B's map of the infrastructure and its links. They differ in how you see every copy at once. The selected copy is #15, whose api crashed.</p>
+
+<div class="cx-legend">
+  <span><span class="cx-dot cx-ok"></span> running</span>
+  <span><span class="cx-dot cx-warn"></span> starting or unhealthy</span>
+  <span><span class="cx-dot cx-err"></span> crashed</span>
+  <span><span class="cx-dot cx-stopdot"></span> stopped</span>
+  <span><span class="cx-dot cx-offdot"></span> declared, not running</span>
+  <span><span class="cx-dot cx-extradot"></span> running, not in the files</span>
+  <span><span class="cx-dot cx-sharedot"></span> shared</span>
+</div>
+
+<div class="cards" style="grid-template-columns:1fr">
+
+  <!-- V1: map + copies grid -->
+  <div class="card" data-choice="map-grid" onclick="toggleSelect(this)">
+    <div class="card-image cx-img">
+      <div class="cx-frame">
+        <div class="cx-toolbar"><b>Containers</b><span>my-app · 4 copies</span><span style="flex:1"></span><span class="cx-pill warn">1 readiness issue</span><span class="cx-pill gone">1 leftover · 1.2 GB</span></div>
+        <div class="cx-body">
+          <div class="cx-maparea">
+            <div class="cx-maplabel">Map · showing copy #15 · click a row below to switch, none for the files only</div>
+            <svg class="cx-svg" viewBox="0 0 600 236" width="100%" role="img" aria-label="Infrastructure map colored by copy 15">
+              <g style="stroke:var(--text-tertiary);stroke-width:1.5;fill:none">
+                <path d="M150 50 L210 50"/>
+                <path d="M340 50 C385 50 385 28 420 28"/>
+                <path d="M340 50 C385 50 385 117 420 117"/>
+                <path d="M340 50 C385 50 385 205 420 205"/>
+                <path d="M150 170 C300 170 360 117 420 117"/>
+                <path d="M275 72 L275 148" style="stroke-dasharray:4 3"/>
+              </g>
+              <rect x="20" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="35" cy="50" r="5" style="fill:var(--success)"/><text x="47" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">web</text><text x="140" y="54" text-anchor="end" style="fill:var(--text-tertiary);font-size:10px">:23000</text>
+              <rect x="20" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--text-tertiary);stroke-width:1.5;stroke-dasharray:4 3"/>
+              <text x="35" y="174" style="fill:var(--text-tertiary);font-size:13px">worker</text>
+              <rect x="210" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--error);stroke-width:2"/>
+              <circle cx="225" cy="50" r="5" style="fill:var(--error)"/><text x="237" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">api</text><text x="330" y="54" text-anchor="end" style="fill:var(--error);font-size:10px">exited 1</text>
+              <rect x="210" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--warning);stroke-width:1.5;stroke-dasharray:4 3"/>
+              <circle cx="225" cy="170" r="5" style="fill:var(--warning)"/><text x="237" y="167" style="fill:var(--text-primary);font-size:12px;font-weight:600">mock-auth</text><text x="237" y="182" style="fill:var(--warning);font-size:9.5px">not in the files</text>
+              <rect x="420" y="6" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="435" cy="28" r="5" style="fill:var(--success)"/><text x="447" y="32" style="fill:var(--text-primary);font-size:13px;font-weight:600">cache</text>
+              <rect x="420" y="95" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="435" cy="117" r="5" style="fill:var(--success)"/><text x="447" y="121" style="fill:var(--text-primary);font-size:13px;font-weight:600">db</text><text x="540" y="121" text-anchor="end" style="fill:var(--text-tertiary);font-size:10px">:25432</text>
+              <rect x="560" y="106" width="36" height="22" rx="11" style="fill:var(--bg-tertiary);stroke:var(--border)"/><text x="578" y="121" text-anchor="middle" style="fill:var(--text-secondary);font-size:9px">vol</text>
+              <rect x="420" y="183" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--accent);stroke-width:1.5"/>
+              <circle cx="435" cy="205" r="5" style="fill:var(--accent)"/><text x="447" y="209" style="fill:var(--text-primary);font-size:13px;font-weight:600">mail</text><text x="540" y="209" text-anchor="end" style="fill:var(--accent);font-size:10px">shared</text>
+            </svg>
+          </div>
+          <div class="cx-drawer">
+            <h4>api · copy #15</h4>
+            <div class="cx-err-line">exited with code 1</div>
+            <div>2 min ago · 3 restarts · port 28080 → 8080</div>
+            <div style="margin-top:8px">Top error, 41 times:<br><code>connect ECONNREFUSED cache:6379</code></div>
+            <div class="cx-btns"><span class="cx-btn">Logs</span><span class="cx-btn">compose.yaml:14</span><span class="cx-btn">Open session</span><span class="cx-btn primary">Ask the agent</span></div>
+          </div>
+        </div>
+        <div class="cx-gridwrap">
+          <table class="cx-grid">
+            <tr><th>copy</th><th>web</th><th>api</th><th>worker</th><th>db</th><th>cache</th><th>mail</th><th>other</th><th></th></tr>
+            <tr><td class="cx-rowhead"><b>Shared</b></td><td></td><td></td><td></td><td></td><td></td><td><span class="cx-dot cx-sharedot"></span></td><td></td><td class="cx-acts"></td></tr>
+            <tr><td class="cx-rowhead"><b>You</b><span class="sub">develop</span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-ok"></span></td><td>↑</td><td></td><td class="cx-acts"></td></tr>
+            <tr><td class="cx-rowhead"><b>#12</b><span class="sub">feat/12-search</span> <span class="cx-pill work">Working</span></td><td><span class="cx-dot cx-offdot"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-offdot"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-warn"></span></td><td>↑</td><td></td><td class="cx-acts"><span class="cx-ico">session</span><span class="cx-ico">plan</span></td></tr>
+            <tr class="sel"><td class="cx-rowhead"><b>#15</b><span class="sub">fix/15-login-timeout</span> <span class="cx-pill">Idle</span></td><td><span class="cx-dot cx-ok"></span></td><td class="cell-sel"><span class="cx-dot cx-err"></span></td><td><span class="cx-dot cx-offdot"></span></td><td><span class="cx-dot cx-ok"></span></td><td><span class="cx-dot cx-ok"></span></td><td>↑</td><td><span class="cx-dot cx-extradot"></span></td><td class="cx-acts"><span class="cx-ico">session</span><span class="cx-ico">plan</span></td></tr>
+            <tr class="dim"><td class="cx-rowhead"><b>Leftovers</b><span class="sub">feat/9-export, worktree removed</span></td><td></td><td></td><td></td><td><span class="cx-dot cx-stopdot"></span></td><td></td><td></td><td></td><td class="cx-acts"><span class="cx-ico">clean up…</span></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>1 · Map on top, a grid of copies below <span class="cx-rec">my pick</span></h3>
+      <p>A becomes a grid: one row per copy, one column per service. Scan it for red, click a row and the map redraws for that copy, click a cell for that container's details. Every copy stays visible at once, so nothing hides behind a click.</p>
+    </div>
+  </div>
+
+  <!-- V2: rail + map (C with a better graph) -->
+  <div class="card" data-choice="rail-map" onclick="toggleSelect(this)">
+    <div class="card-image cx-img">
+      <div class="cx-frame">
+        <div class="cx-toolbar"><b>Containers</b><span>my-app · 4 copies</span><span style="flex:1"></span><span class="cx-pill warn">1 readiness issue</span></div>
+        <div class="cx-body3">
+          <div class="cx-list">
+            <div class="cx-item"><b>Shared</b><br>mail · running</div>
+            <div class="cx-item"><b>You</b> · develop<br>5 of 5 up
+              <div class="dots"><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span></div></div>
+            <div class="cx-item"><b>#12</b> feat/12-search <span class="cx-pill work">Working</span><br>cache unhealthy
+              <div class="dots"><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-warn"></span></div></div>
+            <div class="cx-item sel"><b>#15</b> fix/15-login-timeout <span class="cx-pill">Idle</span><br><span class="issue">api crashed</span>
+              <div class="dots"><span class="cx-dot cx-ok"></span><span class="cx-dot cx-err"></span><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span></div></div>
+            <div class="cx-item dim"><b>Leftovers</b><br>feat/9-export · 1.2 GB</div>
+          </div>
+          <div class="cx-maparea">
+            <div class="cx-maplabel">Map · copy #15</div>
+            <svg class="cx-svg" viewBox="0 0 600 236" width="100%" role="img" aria-label="Infrastructure map colored by copy 15">
+              <g style="stroke:var(--text-tertiary);stroke-width:1.5;fill:none">
+                <path d="M150 50 L210 50"/>
+                <path d="M340 50 C385 50 385 28 420 28"/>
+                <path d="M340 50 C385 50 385 117 420 117"/>
+                <path d="M340 50 C385 50 385 205 420 205"/>
+                <path d="M150 170 C300 170 360 117 420 117"/>
+                <path d="M275 72 L275 148" style="stroke-dasharray:4 3"/>
+              </g>
+              <rect x="20" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="35" cy="50" r="5" style="fill:var(--success)"/><text x="47" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">web</text>
+              <rect x="20" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--text-tertiary);stroke-width:1.5;stroke-dasharray:4 3"/>
+              <text x="35" y="174" style="fill:var(--text-tertiary);font-size:13px">worker</text>
+              <rect x="210" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--error);stroke-width:2"/>
+              <circle cx="225" cy="50" r="5" style="fill:var(--error)"/><text x="237" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">api</text><text x="330" y="54" text-anchor="end" style="fill:var(--error);font-size:10px">exited 1</text>
+              <rect x="210" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--warning);stroke-width:1.5;stroke-dasharray:4 3"/>
+              <circle cx="225" cy="170" r="5" style="fill:var(--warning)"/><text x="237" y="167" style="fill:var(--text-primary);font-size:12px;font-weight:600">mock-auth</text><text x="237" y="182" style="fill:var(--warning);font-size:9.5px">not in the files</text>
+              <rect x="420" y="6" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="435" cy="28" r="5" style="fill:var(--success)"/><text x="447" y="32" style="fill:var(--text-primary);font-size:13px;font-weight:600">cache</text>
+              <rect x="420" y="95" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+              <circle cx="435" cy="117" r="5" style="fill:var(--success)"/><text x="447" y="121" style="fill:var(--text-primary);font-size:13px;font-weight:600">db</text>
+              <rect x="420" y="183" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--accent);stroke-width:1.5"/>
+              <circle cx="435" cy="205" r="5" style="fill:var(--accent)"/><text x="447" y="209" style="fill:var(--text-primary);font-size:13px;font-weight:600">mail</text><text x="540" y="209" text-anchor="end" style="fill:var(--accent);font-size:10px">shared</text>
+            </svg>
+          </div>
+          <div class="cx-drawer">
+            <h4>api · copy #15</h4>
+            <div class="cx-err-line">exited with code 1</div>
+            <div>2 min ago · 3 restarts · port 28080 → 8080</div>
+            <div style="margin-top:8px">Top error, 41 times:<br><code>connect ECONNREFUSED cache:6379</code></div>
+            <div class="cx-btns"><span class="cx-btn">Logs</span><span class="cx-btn">compose.yaml:14</span><span class="cx-btn">Open session</span><span class="cx-btn primary">Ask the agent</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>2 · C with a better graph: copies on the left, map in the middle</h3>
+      <p>The list carries a short summary and a row of dots per copy, and the map shows whichever copy you pick. It reads like Jensen's session rail, but each copy's detail sits behind a click.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:1.5rem">In both, the details panel on the right is where the links to the code and the agent live. Tell me in the terminal which is closer and what you'd change.</p>

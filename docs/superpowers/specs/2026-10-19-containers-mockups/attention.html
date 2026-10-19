@@ -1,0 +1,159 @@
+<style>
+  .cx-win { position:relative; border:1px solid var(--border); border-radius:12px; background:var(--bg-secondary); overflow:hidden; font-size:.74rem; color:var(--text-secondary); min-width:860px }
+  .cx-title { display:flex; align-items:center; gap:14px; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--bg-tertiary); font-size:.7rem }
+  .cx-title b { color:var(--text-primary) }
+  .cx-title .tab { padding:1px 8px; border-radius:5px } .cx-title .tab.on { background:var(--bg-secondary); color:var(--text-primary) }
+  .cx-main { display:grid; grid-template-columns:36% 64%; min-height:330px }
+  .cx-editor { border-right:1px solid var(--border); background:var(--bg-primary); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; padding:6px 0; position:relative }
+  .cx-etab { font-family:system-ui,sans-serif; font-size:.68rem; padding:0 10px 6px; border-bottom:1px solid var(--border); margin-bottom:4px; color:var(--text-primary) }
+  .cx-line { display:grid; grid-template-columns:26px 18px 1fr; align-items:center; height:19px; white-space:pre }
+  .cx-ln { text-align:right; color:var(--text-tertiary); padding-right:4px }
+  .cx-gut { text-align:center; font-size:.62rem }
+  .cx-gut.ok { color:var(--success) } .cx-gut.err { color:var(--error); font-weight:700 } .cx-gut.warn { color:var(--warning) }
+  .cx-code { color:var(--text-primary) }
+  .cx-hint { color:var(--text-tertiary); font-style:italic; font-family:system-ui,sans-serif; font-size:.64rem; margin-left:10px }
+  .cx-hint.err { color:var(--error) }
+  .cx-mark { text-decoration:underline wavy var(--warning); text-underline-offset:3px }
+  .cx-pane { display:grid; grid-template-columns:170px 1fr; min-width:0 }
+  .cx-rail { border-right:1px solid var(--border); background:var(--bg-primary) }
+  .cx-rhead { padding:6px 10px; font-size:.68rem; color:var(--text-primary); border-bottom:1px solid var(--border); display:flex; justify-content:space-between }
+  .cx-item { position:relative; padding:8px 10px 8px 12px; border-bottom:1px solid var(--border); line-height:1.4 }
+  .cx-item b { color:var(--text-primary); font-size:.72rem }
+  .cx-item.sel { background:var(--selected-bg) }
+  .cx-item.bad { box-shadow:inset 3px 0 0 var(--error) }
+  .cx-item.meh { box-shadow:inset 3px 0 0 var(--warning) }
+  .cx-item.dim { opacity:.6 }
+  .cx-unseen { position:absolute; right:9px; top:10px; width:8px; height:8px; border-radius:50%; background:var(--error) }
+  .cx-issue { color:var(--error) } .cx-meh { color:var(--warning) }
+  .cx-dots { display:flex; gap:3px; margin-top:3px }
+  .cx-dot { display:inline-block; width:8px; height:8px; border-radius:50% }
+  .cx-ok { background:var(--success) } .cx-warn { background:var(--warning) } .cx-err { background:var(--error) }
+  .cx-offdot { border:1.5px dashed var(--text-tertiary) }
+  .cx-chip { display:inline-block; font-size:.6rem; padding:0 6px; border-radius:9px; background:var(--bg-tertiary) }
+  .cx-chip.work { background:rgba(52,199,89,.18); color:var(--success) }
+  .cx-right { display:flex; flex-direction:column; min-width:0 }
+  .cx-map { padding:6px 8px 0 }
+  .cx-drawer { border-top:1px solid var(--border); padding:8px 12px; background:var(--bg-primary); line-height:1.45 }
+  .cx-drawer b { color:var(--text-primary) }
+  .cx-drawer code { font-size:.66rem; background:var(--bg-tertiary); padding:1px 4px; border-radius:4px; color:var(--text-primary) }
+  .cx-btn { display:inline-block; font-size:.64rem; padding:2px 7px; border:1px solid var(--border); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); margin:6px 4px 0 0 }
+  .cx-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff }
+  .cx-status { display:flex; gap:16px; justify-content:flex-end; align-items:center; padding:4px 12px; border-top:1px solid var(--border); background:var(--bg-tertiary); font-size:.68rem }
+  .cx-sb-bad { color:#fff; background:var(--error); padding:1px 8px; border-radius:5px; font-weight:600 }
+  .cx-toast { position:absolute; right:14px; top:38px; width:300px; background:var(--bg-secondary); border:1px solid var(--error); border-left:4px solid var(--error); border-radius:8px; padding:9px 11px; box-shadow:0 6px 18px rgba(0,0,0,.18); line-height:1.4; z-index:2 }
+  .cx-toast b { color:var(--text-primary) }
+  .cx-n { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; border-radius:50%; background:var(--accent); color:#fff; font-size:.62rem; font-weight:700; font-family:system-ui,sans-serif; flex-shrink:0 }
+  .cx-callout { position:absolute; z-index:3 }
+  .cx-keys { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:.6rem 1.4rem; margin-top:1.2rem }
+  .cx-key { display:flex; gap:.6rem; font-size:.82rem; line-height:1.45 }
+  .cx-key p { margin:0; color:var(--text-secondary) }
+  .cx-key b { color:var(--text-primary) }
+  .cx-sdk { display:inline-block; font-size:.66rem; padding:0 6px; border-radius:8px; margin-left:4px; vertical-align:1px }
+  .cx-sdk.today { background:rgba(52,199,89,.16); color:var(--success) }
+  .cx-sdk.ask { background:rgba(255,159,10,.18); color:var(--warning) }
+  .cx-svg text { font-family:system-ui,-apple-system,sans-serif }
+  .cx-scroll { overflow-x:auto; padding-bottom:4px }
+</style>
+
+<h2>Where the alerts would show</h2>
+<p class="subtitle">Option 2 inside a Jensen window, at the moment #15's api crashes while its agent sits idle. Which problems should fire which alert is the question in the terminal.</p>
+
+<div class="cx-scroll">
+<div class="cx-win">
+  <div class="cx-title"><b>my-app</b><span class="tab">Session</span><span class="tab on">Code</span><span class="tab">Notes</span></div>
+
+  <div class="cx-toast">
+    <b>api crashed in #15 · fix/15-login-timeout</b><br>
+    Exited with code 1, 3 restarts. Its agent is idle.
+  </div>
+  <div class="cx-callout" style="right:322px;top:44px"><span class="cx-n">1</span></div>
+
+  <div class="cx-main">
+    <div class="cx-editor">
+      <div class="cx-etab">compose.yaml</div>
+      <div class="cx-line"><span class="cx-ln">1</span><span class="cx-gut"></span><span class="cx-code">services:</span></div>
+      <div class="cx-line"><span class="cx-ln">2</span><span class="cx-gut ok">●</span><span class="cx-code">  web:<span class="cx-hint">all copies up</span></span></div>
+      <div class="cx-line"><span class="cx-ln">3</span><span class="cx-gut"></span><span class="cx-code">    build: ./web</span></div>
+      <div class="cx-line"><span class="cx-ln">4</span><span class="cx-gut"></span><span class="cx-code">    depends_on: [api]</span></div>
+      <div class="cx-line"><span class="cx-ln">5</span><span class="cx-gut err">✕</span><span class="cx-code">  api:<span class="cx-hint err">crashed in #15</span></span></div>
+      <div class="cx-line"><span class="cx-ln">6</span><span class="cx-gut"></span><span class="cx-code">    build: ./api</span></div>
+      <div class="cx-line"><span class="cx-ln">7</span><span class="cx-gut"></span><span class="cx-code">    depends_on: [db, cache]</span></div>
+      <div class="cx-line"><span class="cx-ln">8</span><span class="cx-gut warn">●</span><span class="cx-code">  cache:<span class="cx-hint">unhealthy in #12</span></span></div>
+      <div class="cx-line"><span class="cx-ln">9</span><span class="cx-gut"></span><span class="cx-code">    image: redis:7</span></div>
+      <div class="cx-line"><span class="cx-ln">10</span><span class="cx-gut ok">●</span><span class="cx-code">  db:</span></div>
+      <div class="cx-line"><span class="cx-ln">11</span><span class="cx-gut"></span><span class="cx-code">    image: postgres:17</span></div>
+      <div class="cx-line"><span class="cx-ln">12</span><span class="cx-gut warn">!</span><span class="cx-code">    ports: ["<span class="cx-mark">5432:5432</span>"]</span></div>
+      <div class="cx-line"><span class="cx-ln">13</span><span class="cx-gut"></span><span class="cx-code">    volumes: [db-data:/var/lib/...]</span></div>
+      <div class="cx-line"><span class="cx-ln">14</span><span class="cx-gut"></span><span class="cx-code">  worker:</span></div>
+      <div class="cx-line"><span class="cx-ln">15</span><span class="cx-gut"></span><span class="cx-code">    build: ./api</span></div>
+      <div class="cx-callout" style="left:6px;top:118px"><span class="cx-n">5</span></div>
+      <div style="position:absolute;left:120px;top:262px;right:10px;font-family:system-ui,sans-serif;font-size:.64rem;color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:5px 7px;background:var(--bg-secondary);box-shadow:0 3px 10px rgba(0,0,0,.15)">
+        <b style="color:var(--warning)">Fixed host port.</b> Run can't give each copy its own port here.<br>Right-click: <span style="color:var(--accent)">Make the port a variable</span>
+      </div>
+    </div>
+
+    <div class="cx-pane">
+      <div class="cx-rail">
+        <div class="cx-rhead"><span>Copies</span><span style="color:var(--text-tertiary)">problems first</span></div>
+        <div class="cx-item sel bad"><span class="cx-unseen"></span><b>#15</b> fix/15-login-timeout<br><span class="cx-chip">Idle</span> <span class="cx-issue">api crashed</span>
+          <div class="cx-dots"><span class="cx-dot cx-ok"></span><span class="cx-dot cx-err"></span><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span></div></div>
+        <div class="cx-item meh"><b>#12</b> feat/12-search<br><span class="cx-chip work">Working</span> <span class="cx-meh">cache unhealthy</span>
+          <div class="cx-dots"><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-offdot"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-warn"></span></div></div>
+        <div class="cx-item"><b>You</b> · develop<br>5 of 5 up
+          <div class="cx-dots"><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span><span class="cx-dot cx-ok"></span></div></div>
+        <div class="cx-item"><b>Shared</b><br>mail · running</div>
+        <div class="cx-item dim"><b>Leftovers</b><br>feat/9-export · 1.2 GB</div>
+      </div>
+      <div class="cx-right">
+        <div class="cx-map">
+          <svg class="cx-svg" viewBox="0 0 600 236" width="100%" role="img" aria-label="Map for copy 15 with the crashed api ringed">
+            <g style="stroke:var(--text-tertiary);stroke-width:1.5;fill:none">
+              <path d="M150 50 L210 50"/>
+              <path d="M340 50 C385 50 385 28 420 28"/>
+              <path d="M340 50 C385 50 385 117 420 117"/>
+              <path d="M340 50 C385 50 385 205 420 205"/>
+              <path d="M150 170 C300 170 360 117 420 117"/>
+              <path d="M275 72 L275 148" style="stroke-dasharray:4 3"/>
+            </g>
+            <rect x="20" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+            <circle cx="35" cy="50" r="5" style="fill:var(--success)"/><text x="47" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">web</text>
+            <rect x="20" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--text-tertiary);stroke-width:1.5;stroke-dasharray:4 3"/>
+            <text x="35" y="174" style="fill:var(--text-tertiary);font-size:13px">worker</text>
+            <rect x="203" y="21" width="144" height="58" rx="13" style="fill:none;stroke:var(--error);stroke-width:1;opacity:.45"/>
+            <rect x="198" y="16" width="154" height="68" rx="16" style="fill:none;stroke:var(--error);stroke-width:1;opacity:.2"/>
+            <rect x="210" y="28" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--error);stroke-width:2"/>
+            <circle cx="225" cy="50" r="5" style="fill:var(--error)"/><text x="237" y="54" style="fill:var(--text-primary);font-size:13px;font-weight:600">api</text><text x="330" y="54" text-anchor="end" style="fill:var(--error);font-size:10px">exited 1</text>
+            <rect x="210" y="148" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--warning);stroke-width:1.5;stroke-dasharray:4 3"/>
+            <circle cx="225" cy="170" r="5" style="fill:var(--warning)"/><text x="237" y="167" style="fill:var(--text-primary);font-size:12px;font-weight:600">mock-auth</text><text x="237" y="182" style="fill:var(--warning);font-size:9.5px">not in the files</text>
+            <rect x="420" y="6" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+            <circle cx="435" cy="28" r="5" style="fill:var(--success)"/><text x="447" y="32" style="fill:var(--text-primary);font-size:13px;font-weight:600">cache</text>
+            <rect x="420" y="95" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--border);stroke-width:1.5"/>
+            <circle cx="435" cy="117" r="5" style="fill:var(--success)"/><text x="447" y="121" style="fill:var(--text-primary);font-size:13px;font-weight:600">db</text>
+            <rect x="420" y="183" width="130" height="44" rx="9" style="fill:var(--bg-primary);stroke:var(--accent);stroke-width:1.5"/>
+            <circle cx="435" cy="205" r="5" style="fill:var(--accent)"/><text x="447" y="209" style="fill:var(--text-primary);font-size:13px;font-weight:600">mail</text><text x="540" y="209" text-anchor="end" style="fill:var(--accent);font-size:10px">shared</text>
+          </svg>
+        </div>
+        <div class="cx-drawer">
+          <b>api · copy #15</b> · <span class="cx-issue">exited with code 1</span>, 2 min ago, 3 restarts · port 28080 → 8080<br>
+          Top error, 41 times: <code>connect ECONNREFUSED cache:6379</code><br>
+          <span class="cx-btn">Logs</span><span class="cx-btn">compose.yaml:5</span><span class="cx-btn">Open session</span><span class="cx-btn primary">Ask the agent</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cx-status"><span>Ln 5, Col 3</span><span>YAML</span><span class="cx-sb-bad">◆ Containers · 1 crashed · 1 unhealthy</span></div>
+  <div class="cx-callout" style="left:36%;margin-left:6px;top:72px"><span class="cx-n">3</span></div>
+  <div class="cx-callout" style="left:63%;top:84px"><span class="cx-n">4</span></div>
+  <div class="cx-callout" style="right:262px;bottom:3px"><span class="cx-n">2</span></div>
+</div>
+</div>
+
+<div class="cx-keys">
+  <div class="cx-key"><span class="cx-n">1</span><p><b>A toast</b> for a problem that needs you, saying whose copy it is and what its agent is doing.<span class="cx-sdk today">SDK today</span><br>A toast can't hold an Open button yet.<span class="cx-sdk ask">request</span></p></div>
+  <div class="cx-key"><span class="cx-n">2</span><p><b>The status bar</b> always shows the worst state across copies, in red or amber. Clicking it opens the pane on that problem.<span class="cx-sdk today">SDK today</span></p></div>
+  <div class="cx-key"><span class="cx-n">3</span><p><b>The rail</b> puts copies with problems first, with a colored edge. A dot stays on until you've looked.<span class="cx-sdk today">SDK today</span></p></div>
+  <div class="cx-key"><span class="cx-n">4</span><p><b>The map</b> rings the failing service, so it stands out even when the pane is small.<span class="cx-sdk today">SDK today</span></p></div>
+  <div class="cx-key"><span class="cx-n">5</span><p><b>The Compose file</b> gets a badge in the gutter and a short note on each service line. A fixed port gets underlined; hovering explains it and the fix sits in the right-click menu.<span class="cx-sdk today">SDK today</span><br>A fix button on the line itself would need one.<span class="cx-sdk ask">request</span></p></div>
+  <div class="cx-key"><span class="cx-n" style="background:var(--text-tertiary)">+</span><p><b>Elsewhere in Jensen</b>: a count on the pane's tab, and a chip on the agent's session card.<span class="cx-sdk ask">request</span></p></div>
+</div>
