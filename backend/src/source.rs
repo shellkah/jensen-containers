@@ -14,6 +14,10 @@ pub type FileId = usize;
 /// the line but is never part of a column. A byte past the end, or inside a character, clamps to
 /// the character boundary before it, so no method panics. The line starts are worked out by
 /// `new`: build a new one rather than change `text`.
+///
+/// `new` drops a leading byte order mark, as editors and `TextDecoder` do, so lines and offsets
+/// count the text the person sees. Parse `text`, not the file's raw contents, so the YAML tree's
+/// byte ranges match.
 #[derive(Clone, Debug)]
 pub struct SourceText {
     pub path: String,
@@ -29,7 +33,10 @@ struct LineStart {
 }
 
 impl SourceText {
-    pub fn new(path: String, text: String) -> SourceText {
+    pub fn new(path: String, mut text: String) -> SourceText {
+        if text.starts_with('\u{feff}') {
+            text.drain(..'\u{feff}'.len_utf8());
+        }
         let mut lines = vec![LineStart { byte: 0, utf16: 0 }];
         let mut utf16 = 0;
         for (byte, character) in text.char_indices() {
@@ -236,6 +243,23 @@ mod tests {
         let reversed = Range { start: 8, end: 2 };
         assert_eq!(source.slice(reversed.clone()), "");
         assert_eq!(source.span(reversed), Span { from: 5, to: 5 });
+    }
+
+    #[test]
+    fn a_leading_bom_is_dropped_as_editors_drop_it() {
+        let source = SourceText::new("a.yml".into(), "\u{feff}a: x\n".into());
+        assert_eq!(source.text, "a: x\n");
+        let root = crate::yaml::parse(0, &source.text).unwrap();
+        let entry = root.entry("a").unwrap();
+        assert_eq!(entry.key.span, 0..1);
+        assert_eq!(source.source_ref(entry.value.span.start).column, 3);
+        assert_eq!(
+            source.span(entry.value.span.clone()),
+            Span { from: 3, to: 4 }
+        );
+        // Only a leading one: a U+FEFF later in the text is text.
+        let later = SourceText::new("a.yml".into(), "a: \u{feff}\n".into());
+        assert_eq!(later.text, "a: \u{feff}\n");
     }
 
     #[test]

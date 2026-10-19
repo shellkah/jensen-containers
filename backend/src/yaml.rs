@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use granit_parser::{Event, Marker, Parser, ScalarStyle, ScanError};
+use granit_parser::{Event, Marker, Parser, ScalarStyle, ScanError, StructureStyle};
 
 use crate::source::FileId;
 
@@ -22,6 +22,13 @@ pub const MAX_SCALAR_BYTES: usize = 16 << 20;
 pub const MAX_DEPTH: usize = 1_000;
 
 /// A YAML value and the bytes of `file` it was written at.
+///
+/// A span covers the node's own text and stops there. A scalar's covers its quotes; a block
+/// scalar's (`|`, `>`) runs from its first character to its last, without the line breaks and
+/// indentation after it. A flow collection's runs to its closing bracket. A block collection's runs
+/// from its first token to the end of the last token written inside it (a scalar, an alias, a
+/// nested collection), never over the comments or blank lines after it. A node copied in by an
+/// alias or a `<<` merge keeps the span of the text it was copied from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub file: FileId,
@@ -50,7 +57,8 @@ pub struct YamlError {
     pub at: usize,
 }
 
-/// Reads the first YAML document of `text` into a tree; an empty document is `Null` at `0..0`.
+/// Reads the first YAML document of `text` into a tree; an empty document, with or without a
+/// `---`, is `Null` at `0..0`.
 ///
 /// An alias is a copy of its anchored node, spans included, so they point where the anchor is
 /// written. A plain `<<` key whose value is a mapping, or a list of mappings, is replaced by their
@@ -74,15 +82,16 @@ pub fn parse(file: FileId, text: &str) -> Result<Node, YamlError> {
             Event::DocumentEnd | Event::StreamEnd => break,
             Event::Alias(id) => tree.alias(id, bytes)?,
             Event::Scalar(value, style, anchor, _) => tree.scalar(&value, style, anchor, bytes)?,
-            Event::SequenceStart(_, anchor, _) => {
-                tree.open(Open::Seq(Vec::new()), anchor, bytes)?
+            Event::SequenceStart(style, anchor, _) => {
+                tree.open(Open::Seq(Vec::new()), style, anchor, bytes)?
             }
-            Event::MappingStart(_, anchor, _) => tree.open(
+            Event::MappingStart(style, anchor, _) => tree.open(
                 Open::Map {
                     entries: Vec::new(),
                     merges: Vec::new(),
                     key: None,
                 },
+                style,
                 anchor,
                 bytes,
             )?,
@@ -90,7 +99,11 @@ pub fn parse(file: FileId, text: &str) -> Result<Node, YamlError> {
             _ => {}
         }
     }
-    Ok(tree.root.unwrap_or(Node {
+    // An empty document still holds an empty null, at the parser's position after `---`.
+    let root = tree
+        .root
+        .filter(|root| !(root.is_null() && root.span.is_empty()));
+    Ok(root.unwrap_or(Node {
         file,
         span: 0..0,
         value: Value::Null,
@@ -137,30 +150,10 @@ impl Node {
         matches!(self.value, Value::Null)
     }
 
-    /// Where this node's own text ends: the end of the last scalar written inside it. A block
-    /// collection's span runs on over the comments and blank lines after it; this doesn't. Values
-    /// that came from an anchor elsewhere don't count, and a node with no scalar of its own, such as
-    /// `{}`, ends where its span does.
+    /// Where this node's own text ends, so a block value ends at its text and not at the comments
+    /// after it: the end of its span (see [`Node`]).
     pub fn last_byte(&self) -> usize {
-        let mut last = None;
-        let mut pending = vec![self];
-        while let Some(node) = pending.pop() {
-            match &node.value {
-                Value::Null | Value::Scalar(_) => {
-                    let inside = node.file == self.file
-                        && node.span.start >= self.span.start
-                        && node.span.end <= self.span.end;
-                    if inside {
-                        last = last.max(Some(node.span.end));
-                    }
-                }
-                Value::Seq(items) => pending.extend(items),
-                Value::Map(entries) => {
-                    pending.extend(entries.iter().flat_map(|entry| [&entry.key, &entry.value]));
-                }
-            }
-        }
-        last.unwrap_or(self.span.end)
+        self.span.end
     }
 }
 
@@ -239,6 +232,11 @@ impl Made {
 /// A collection that has started and not yet ended.
 struct Frame {
     start: usize,
+    /// A flow collection ends at its closing bracket; a block one at `end`.
+    flow: bool,
+    /// The end of the last token written inside the collection so far: a scalar, an alias, or a
+    /// nested collection's end. Nodes copied in by an alias or a merge don't move it.
+    end: usize,
     anchor: usize,
     /// What the collection holds so far.
     weight: Weight,
@@ -259,33 +257,56 @@ enum Open {
 impl Tree<'_> {
     fn scalar(
         &mut self,
-        text: &str,
+        content: &str,
         style: ScalarStyle,
         anchor: usize,
         bytes: Range<usize>,
     ) -> Result<(), YamlError> {
         let at = bytes.start;
         let plain = matches!(style, ScalarStyle::Plain);
-        let value = if plain && matches!(text, "" | "~" | "null" | "Null" | "NULL") {
+        let value = if plain && matches!(content, "" | "~" | "null" | "Null" | "NULL") {
             Value::Null
         } else {
-            Value::Scalar(text.to_owned())
+            Value::Scalar(content.to_owned())
+        };
+        let span = if matches!(style, ScalarStyle::Literal | ScalarStyle::Folded) {
+            self.block_scalar_span(bytes, content.is_empty())
+        } else {
+            bytes
         };
         let node = Node {
             file: self.file,
-            span: bytes,
+            span,
             value,
         };
         let weight = Weight::leaf(node.as_str().map_or(0, str::len));
         self.made.add(weight, at)?;
-        self.finish(node, weight, anchor, plain && text == "<<", at)
+        self.finish(node, weight, anchor, plain && content == "<<", at)
     }
 
-    fn open(&mut self, kind: Open, anchor: usize, bytes: Range<usize>) -> Result<(), YamlError> {
+    /// The parser ends a block scalar after its trailing line breaks and the next line's
+    /// indentation, so its span is cut back to its last character. An empty one, which the parser
+    /// puts at the start of the next line, ends just after its `|` or `>` indicator instead.
+    fn block_scalar_span(&self, bytes: Range<usize>, empty: bool) -> Range<usize> {
+        let before = self.text.get(..bytes.end).unwrap_or_default();
+        let end = before.trim_end_matches([' ', '\t', '\r', '\n']).len();
+        let start = if empty { end } else { bytes.start.min(end) };
+        start..end
+    }
+
+    fn open(
+        &mut self,
+        kind: Open,
+        style: StructureStyle,
+        anchor: usize,
+        bytes: Range<usize>,
+    ) -> Result<(), YamlError> {
         let weight = Weight::leaf(0);
         self.made.add(weight, bytes.start)?;
         self.open.push(Frame {
             start: bytes.start,
+            flow: matches!(style, StructureStyle::Flow),
+            end: bytes.start,
             anchor,
             weight,
             kind,
@@ -303,9 +324,11 @@ impl Tree<'_> {
                 entries, merges, ..
             } => Value::Map(merge(entries, merges, &mut frame.weight)),
         };
+        // The parser ends a block collection where the next token starts, past any comments.
+        let end = if frame.flow { bytes.end } else { frame.end };
         let node = Node {
             file: self.file,
-            span: frame.start..bytes.end.max(frame.start),
+            span: frame.start..end.max(frame.start),
             value,
         };
         self.finish(node, frame.weight, frame.anchor, false, bytes.start)
@@ -334,7 +357,8 @@ impl Tree<'_> {
         }
         self.made.add(*weight, at)?;
         let (node, weight) = (node.clone(), *weight);
-        self.place(node, weight, false);
+        // The copy keeps the anchor's span; the alias token written here is what ends here.
+        self.place(node, weight, false, bytes.end);
         Ok(())
     }
 
@@ -351,17 +375,21 @@ impl Tree<'_> {
             self.made.add(weight, at)?;
             self.anchors.insert(anchor, (node.clone(), weight));
         }
-        self.place(node, weight, merge_key);
+        let end = node.span.end;
+        self.place(node, weight, merge_key, end);
         Ok(())
     }
 
-    fn place(&mut self, node: Node, weight: Weight, merge_key: bool) {
+    /// Puts `node` in the collection that holds it, whose own text now runs to at least
+    /// `token_end`, the end of the token written for it here.
+    fn place(&mut self, node: Node, weight: Weight, merge_key: bool, token_end: usize) {
         let Some(frame) = self.open.last_mut() else {
             if self.root.is_none() {
                 self.root = Some(node);
             }
             return;
         };
+        frame.end = frame.end.max(token_end);
         frame.weight.hold(weight);
         match &mut frame.kind {
             Open::Seq(items) => items.push(node),
@@ -480,6 +508,8 @@ fn byte_of(marker: &Marker, text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{SourceRef, Span};
+    use crate::source::SourceText;
 
     fn at<'t>(text: &'t str, node: &Node) -> &'t str {
         &text[node.span.clone()]
@@ -529,7 +559,7 @@ mod tests {
 
     #[test]
     fn an_empty_document_is_null_at_the_start() {
-        for text in ["", "# only a comment\n", "\n\n"] {
+        for text in ["", "# only a comment\n", "\n\n", "---\n", "--- # c\n# d\n"] {
             let root = parse(3, text).unwrap();
             assert_eq!(
                 root,
@@ -623,12 +653,8 @@ mod tests {
         let text = "a:\n  b: 1\n  c: two\n# trailing comment\n\nd: 2\n";
         let root = parse(0, text).unwrap();
         let a = root.get("a").unwrap();
-        let two_end = text.find("two").unwrap() + 3;
-        assert!(
-            a.span.end > two_end,
-            "the block span runs on to the next key"
-        );
-        assert_eq!(a.last_byte(), two_end);
+        assert_eq!(at(text, a), "b: 1\n  c: two");
+        assert_eq!(a.last_byte(), text.find("two").unwrap() + 3);
         assert_eq!(root.get("d").unwrap().last_byte(), text.len() - 1);
         assert_eq!(root.last_byte(), text.len() - 1);
     }
@@ -641,10 +667,98 @@ mod tests {
         assert_eq!(y.get("k").unwrap().as_str(), Some("v"));
         assert_eq!(y.last_byte(), text.find("own: 1").unwrap() + 6);
         let z = root.get("z").unwrap();
+        assert_eq!(at(text, z), "[*x]");
         assert_eq!(z.last_byte(), z.span.end);
         let w = root.get("w").unwrap();
         assert_eq!(at(text, w), "{}");
         assert_eq!(w.last_byte(), w.span.end);
+    }
+
+    #[test]
+    fn block_scalars_end_at_their_last_character() {
+        for text in [
+            "services:\n  web:\n    command: |\n      echo hi\n  db:\n",
+            "services:\n  web:\n    command: |\n      echo hi\n\n  # note\n  db:\n",
+            "services:\n  web:\n    command: >-\n      echo\n      hi\n\n\n  db:\n",
+            "services:\r\n  web:\r\n    command: |+\r\n      echo hi\r\n\r\n  db:\r\n",
+        ] {
+            let services = parse(0, text).unwrap();
+            let web = services.get("services").unwrap().get("web").unwrap();
+            let command = web.get("command").unwrap();
+            assert!(at(text, command).starts_with("echo"), "{text:?}");
+            assert!(at(text, command).ends_with("hi"), "{text:?}");
+            assert_eq!(web.last_byte(), command.span.end, "{text:?}");
+            assert_eq!(web.last_byte(), text.find("hi").unwrap() + 2, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_block_scalar_ends_at_its_indicator() {
+        for (text, indicator) in [
+            ("a: |\nb: 1\n", "|"),
+            ("a: >-\n\n\nb: 1\n", ">-"),
+            ("a: |\n", "|"),
+        ] {
+            let root = parse(0, text).unwrap();
+            let a = root.get("a").unwrap();
+            assert_eq!(a.as_str(), Some(""), "{text:?}");
+            let end = text.find(indicator).unwrap() + indicator.len();
+            assert_eq!(a.span, end..end, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_mapping_ending_in_an_alias_ends_at_the_alias() {
+        let text = "x-env: &env\n  A: 1\nservices:\n  web:\n    image: nginx\n    environment: *env\n  # c\n  db: {}\n";
+        let root = parse(0, text).unwrap();
+        let web = root.get("services").unwrap().get("web").unwrap();
+        assert_eq!(web.last_byte(), text.find("*env").unwrap() + 4);
+        assert_eq!(at(text, web), "image: nginx\n    environment: *env");
+    }
+
+    #[test]
+    fn a_mapping_ending_in_a_merge_key_ends_after_it() {
+        let text = "x-log: &log\n  logging: json\nservices:\n  web:\n    image: nginx\n    <<: *log\n\n  db: {}\n";
+        let root = parse(0, text).unwrap();
+        let web = root.get("services").unwrap().get("web").unwrap();
+        assert_eq!(web.get("logging").unwrap().as_str(), Some("json"));
+        assert!(web.get("<<").is_none());
+        assert_eq!(at(text, web), "image: nginx\n    <<: *log");
+        assert_eq!(web.last_byte(), text.find("*log").unwrap() + 4);
+    }
+
+    #[test]
+    fn a_flow_collection_ends_at_its_bracket() {
+        let text = "a: [x, y]  # c\nb: {k: v}\nm:\n  p: [1]\n# c\nn: 1\n";
+        let root = parse(0, text).unwrap();
+        let a = root.get("a").unwrap();
+        assert_eq!(at(text, a), "[x, y]");
+        assert_eq!(a.last_byte(), text.find(']').unwrap() + 1);
+        assert_eq!(at(text, root.get("b").unwrap()), "{k: v}");
+        let m = root.get("m").unwrap();
+        assert_eq!(at(text, m), "p: [1]");
+        assert_eq!(m.last_byte(), text.find("[1]").unwrap() + 3);
+    }
+
+    #[test]
+    fn crlf_text_parses_to_editor_positions() {
+        let text = "a: 1\r\nb: x\r\nc:\r\n  d: y\r\n\r\ne: 2\r\n";
+        let root = parse(0, text).unwrap();
+        let source = SourceText::new("a.yml".into(), text.into());
+        let b = root.get("b").unwrap();
+        assert_eq!(b.span, 9..10);
+        assert_eq!(
+            source.source_ref(b.span.start),
+            SourceRef {
+                file: "a.yml".into(),
+                line: 1,
+                column: 3
+            }
+        );
+        assert_eq!(source.span(b.span.clone()), Span { from: 9, to: 10 });
+        let c = root.get("c").unwrap();
+        assert_eq!(at(text, c), "d: y");
+        assert_eq!(source.source_ref(c.last_byte()).line, 3);
     }
 
     #[test]
