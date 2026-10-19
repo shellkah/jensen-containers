@@ -9,7 +9,10 @@ import type { App } from "@jensen-org/plugin-sdk";
 // - Every path is relative to the checkout root (the folder `checkout` names, or the project root);
 //   a caller that passed a checkout prefixes it to open a file.
 // - An edge's `from` is always a service. Its `to` is a service for `depends_on` and `links`, a
-//   network for `network` and a volume for `volume`.
+//   network for `network` and a volume for `volume`, one the model has: a name the project doesn't
+//   define is a `LoadError` instead, and a name that holds an unresolved variable makes no edge.
+//   A network edge's `to` may name the implicit `default` network, which `model.networks` lists
+//   only when a file declares it.
 
 export interface SourceRef {
   file: string;

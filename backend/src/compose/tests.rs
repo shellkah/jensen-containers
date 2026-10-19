@@ -92,7 +92,7 @@ fn unresolved_variables_point_at_their_dollar() {
 
 #[test]
 fn services_keep_their_fields_and_positions() {
-    let text = "services:\n  web:\n    image: nginx:${TAG:-1.27}\n    build:\n      context: ../app\n      dockerfile: Dockerfile.dev\n    container_name: web-1\n    profiles: [debug, \"${EXTRA:-tools}\"]\n    networks: [front, back]\n    depends_on: [db]\n  db:\n    build: .\n    networks:\n      back:\n        aliases: [database]\n    depends_on:\n      cache:\n        condition: service_healthy\n  cache:\n    build: https://github.com/x/cache.git#main\n  out:\n    build:\n      dockerfile: Dockerfile\n  far:\n    build: ../../../elsewhere\n";
+    let text = "services:\n  web:\n    image: nginx:${TAG:-1.27}\n    build:\n      context: ../app\n      dockerfile: Dockerfile.dev\n    container_name: web-1\n    profiles: [debug, \"${EXTRA:-tools}\"]\n    networks: [front, back]\n    depends_on: [db]\n  db:\n    build: .\n    networks:\n      back:\n        aliases: [database]\n    depends_on:\n      cache:\n        condition: service_healthy\n  cache:\n    build: https://github.com/x/cache.git#main\n  out:\n    build:\n      dockerfile: Dockerfile\n  far:\n    build: ../../../elsewhere\nnetworks:\n  front:\n  back:\n";
     let path = "infra/local/compose.yaml";
     let files = MemFiles::from([(path, text)]);
     let project = load_project(&files, &Checkout::primary(), &[path.to_string()]);
@@ -259,7 +259,7 @@ fn short_and_long_ports_become_bindings() {
 
 #[test]
 fn volumes_become_mounts() {
-    let text = "services:\n  db:\n    volumes:\n      - data:/var/lib/data\n      - ./init:/init:ro,z\n      - /anon\n      - ${DATA:-./d}:/d\n      - type: bind\n        source: ./src\n        target: /src\n        read_only: true\n      - type: tmpfs\n        target: /tmp\n      - type: volume\n        source: cache\n        target: /cache\n      - type: npipe\n        source: //./pipe/x\n        target: //./pipe/x\n";
+    let text = "services:\n  db:\n    volumes:\n      - data:/var/lib/data\n      - ./init:/init:ro,z\n      - /anon\n      - ${DATA:-./d}:/d\n      - type: bind\n        source: ./src\n        target: /src\n        read_only: true\n      - type: tmpfs\n        target: /tmp\n      - type: volume\n        source: cache\n        target: /cache\n      - type: npipe\n        source: //./pipe/x\n        target: //./pipe/x\nvolumes:\n  data:\n  cache:\n";
     let project = one(text);
     assert!(project.errors.is_empty(), "{:?}", project.errors);
     let mount = |kind, source: Option<&str>, target: &str, read_only| VolumeMount {
@@ -367,7 +367,7 @@ fn top_level_volumes_and_networks_become_resources() {
 
 #[test]
 fn edges_follow_depends_on_links_networks_and_volumes() {
-    let text = "services:\n  web:\n    depends_on: [db]\n    links: [\"cache:redis\", db]\n    networks: [front]\n    volumes: [\"data:/data\", \"./src:/src\", \"data:/again\", /anon]\n  db:\n    networks: {back: {}}\n    depends_on: {cache: {condition: service_started}}\n  cache: {}\n";
+    let text = "services:\n  web:\n    depends_on: [db]\n    links: [\"cache:redis\", db]\n    networks: [front]\n    volumes: [\"data:/data\", \"./src:/src\", \"data:/again\", /anon]\n  db:\n    networks: {back: {}}\n    depends_on: {cache: {condition: service_started}}\n  cache: {}\nvolumes:\n  data:\nnetworks:\n  front:\n  back:\n";
     let project = one(text);
     assert!(project.errors.is_empty(), "{:?}", project.errors);
     let edge = |from: &str, to: &str, kind| Edge {
@@ -389,6 +389,178 @@ fn edges_follow_depends_on_links_networks_and_volumes() {
     );
     // A service on the default network names none.
     assert!(project.model.services[2].networks.is_empty());
+}
+
+/// Each error's message and the line and column it points at, each in its own file.
+fn refused(project: &Project) -> Vec<(&str, u32, u32)> {
+    errors_at(project);
+    project
+        .errors
+        .iter()
+        .map(|error| {
+            let at = error.source.as_ref().unwrap();
+            (error.message.as_str(), at.line, at.column)
+        })
+        .collect()
+}
+
+/// Each edge as its from, to and kind.
+fn edges_of(project: &Project) -> Vec<(&str, &str, EdgeKind)> {
+    project
+        .model
+        .edges
+        .iter()
+        .map(|edge| (edge.from.as_str(), edge.to.as_str(), edge.kind))
+        .collect()
+}
+
+#[test]
+fn depending_on_an_undefined_service_is_a_load_error() {
+    let text = "services:\n  web:\n    depends_on: [db, ghost]\n  api:\n    depends_on:\n      spirit:\n        condition: service_started\n  db: {}\n";
+    let project = one(text);
+    assert_eq!(
+        refused(&project),
+        [
+            (
+                "web depends on ghost, which is not defined; Compose refuses this",
+                2,
+                21
+            ),
+            (
+                "api depends on spirit, which is not defined; Compose refuses this",
+                5,
+                6
+            ),
+        ]
+    );
+    assert_eq!(edges_of(&project), [("web", "db", EdgeKind::DependsOn)]);
+    // The model still says what the file declares.
+    assert_eq!(project.model.services[0].depends_on, ["db", "ghost"]);
+
+    // A service another -f file or an included file defines is defined.
+    let project = loaded(
+        [
+            (
+                "compose.yaml",
+                "include: [db.yml]\nservices:\n  web:\n    depends_on: [db, cache]\n",
+            ),
+            ("db.yml", "services:\n  db: {}\n"),
+            ("override.yaml", "services:\n  cache: {}\n"),
+        ],
+        &["compose.yaml", "override.yaml"],
+    );
+    assert_eq!(
+        edges_of(&project),
+        [
+            ("web", "db", EdgeKind::DependsOn),
+            ("web", "cache", EdgeKind::DependsOn)
+        ]
+    );
+}
+
+#[test]
+fn linking_to_an_undefined_service_is_a_load_error() {
+    let text =
+        "services:\n  web:\n    links: [\"db:database\", phantom, \"ghost:alias\"]\n  db: {}\n";
+    let project = one(text);
+    assert_eq!(
+        refused(&project),
+        [
+            (
+                "web links to phantom, which is not defined; Compose refuses this",
+                2,
+                27
+            ),
+            (
+                "web links to ghost, which is not defined; Compose refuses this",
+                2,
+                36
+            ),
+        ]
+    );
+    assert_eq!(edges_of(&project), [("web", "db", EdgeKind::Links)]);
+}
+
+#[test]
+fn mounting_an_undeclared_volume_is_a_load_error() {
+    let text = "services:\n  web:\n    volumes:\n      - data:/data\n      - missing:/m\n      - type: volume\n        source: absent\n        target: /a\n      - ./src:/src\n      - /anon\n      - {type: bind, source: ./b, target: /b}\nvolumes:\n  data:\n";
+    let project = one(text);
+    assert_eq!(
+        refused(&project),
+        [
+            (
+                "web mounts volume missing, which is not defined; Compose refuses this",
+                4,
+                8
+            ),
+            (
+                "web mounts volume absent, which is not defined; Compose refuses this",
+                6,
+                16
+            ),
+        ]
+    );
+    assert_eq!(edges_of(&project), [("web", "data", EdgeKind::Volume)]);
+    assert_eq!(project.model.services[0].volumes.len(), 6);
+}
+
+#[test]
+fn joining_an_undeclared_network_is_a_load_error() {
+    let text = "services:\n  web:\n    networks: [front, nowhere]\n  api:\n    networks:\n      void:\n        aliases: [x]\nnetworks:\n  front:\n";
+    let project = one(text);
+    assert_eq!(
+        refused(&project),
+        [
+            (
+                "web joins network nowhere, which is not defined; Compose refuses this",
+                2,
+                22
+            ),
+            (
+                "api joins network void, which is not defined; Compose refuses this",
+                5,
+                6
+            ),
+        ]
+    );
+    assert_eq!(edges_of(&project), [("web", "front", EdgeKind::Network)]);
+}
+
+#[test]
+fn a_name_from_an_unprovided_variable_makes_no_edge_and_no_error() {
+    let text = "services:\n  web:\n    depends_on: [\"${DB}\"]\n    links: [\"${LINK}:alias\"]\n    networks: [\"${NET}\"]\n    volumes: [\"${VOL}:/data\"]\n";
+    let project = one(text);
+    assert!(project.errors.is_empty(), "{:?}", project.errors);
+    assert!(project.model.edges.is_empty(), "{:?}", project.model.edges);
+    let variables: Vec<_> = project
+        .unresolved
+        .iter()
+        .map(|u| u.variable.as_str())
+        .collect();
+    assert_eq!(variables, ["DB", "LINK", "NET", "VOL"]);
+}
+
+#[test]
+fn the_default_network_is_always_there() {
+    let text = "services:\n  web:\n    networks: [default, front]\n  api:\n    networks: {default: {}}\nnetworks:\n  front:\n";
+    let project = one(text);
+    assert!(project.errors.is_empty(), "{:?}", project.errors);
+    assert_eq!(
+        edges_of(&project),
+        [
+            ("web", "default", EdgeKind::Network),
+            ("web", "front", EdgeKind::Network),
+            ("api", "default", EdgeKind::Network),
+        ]
+    );
+    // Only a network a file declares is a resource.
+    let networks: Vec<_> = project
+        .model
+        .networks
+        .iter()
+        .map(|n| n.name.as_str())
+        .collect();
+    assert_eq!(networks, ["front"]);
 }
 
 #[test]
@@ -466,7 +638,7 @@ fn bad_shapes_are_load_errors_not_panics() {
     assert_eq!(error_at(&services_list), [file(0, 10)]);
     assert!(services_list.model.services.is_empty());
 
-    let text = "services:\n  db: postgres\n  web:\n    image: nginx\n    ports: {a: b}\n  api:\n    image: node\n    ports:\n      - [8080]\n      - \"8080:\"\n      - 3000:3000\n      - {published: 1}\n    volumes:\n      - ~\n      - \"a:b:c:d\"\n      - {type: bind}\n      - data:/data\n  none:\n";
+    let text = "services:\n  db: postgres\n  web:\n    image: nginx\n    ports: {a: b}\n  api:\n    image: node\n    ports:\n      - [8080]\n      - \"8080:\"\n      - 3000:3000\n      - {published: 1}\n    volumes:\n      - ~\n      - \"a:b:c:d\"\n      - {type: bind}\n      - data:/data\n  none:\nvolumes:\n  data:\n";
     let mixed = one(text);
     assert_eq!(
         error_at(&mixed),
@@ -1061,7 +1233,7 @@ fn extends_merges_the_base_under_the_service() {
     let files = RecordingFiles::new(MemFiles::from([
         (
             "compose.yaml",
-            "services:\n  api:\n    extends:\n      file: common/base.yml\n      service: base\n    image: api:1\n    ports: [\"8000:8000\"]\n  worker:\n    extends: api\n    command: work\n",
+            "services:\n  api:\n    extends:\n      file: common/base.yml\n      service: base\n    image: api:1\n    ports: [\"8000:8000\"]\n  worker:\n    extends: api\n    command: work\n  db:\n    image: postgres:16\n",
         ),
         (
             "common/base.yml",
@@ -1072,10 +1244,10 @@ fn extends_merges_the_base_under_the_service() {
     assert!(project.errors.is_empty(), "{:?}", project.errors);
     assert_eq!(files.reads(), ["compose.yaml", "common/base.yml"]);
     assert_eq!(project.model.files, ["compose.yaml", "common/base.yml"]);
-    // The base file's services aren't the project's.
-    assert_eq!(service_names(&project), ["api", "worker"]);
-    let [api, worker] = project.model.services.as_slice() else {
-        panic!("two services");
+    // The base file's services aren't the project's: the db they depend on is this file's.
+    assert_eq!(service_names(&project), ["api", "worker", "db"]);
+    let [api, worker, _] = project.model.services.as_slice() else {
+        panic!("three services");
     };
 
     // The service's own keys win, and what it inherits keeps where it is written.

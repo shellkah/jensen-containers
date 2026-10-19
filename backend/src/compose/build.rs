@@ -37,7 +37,7 @@ pub(super) fn project(loaded: Loaded, checkout: &Checkout) -> Project {
         errors,
         facts: Facts::default(),
     };
-    let services: Vec<_> = services
+    let built: Vec<_> = services
         .iter()
         .filter_map(|service| builder.service(service))
         .collect();
@@ -45,9 +45,24 @@ pub(super) fn project(loaded: Loaded, checkout: &Checkout) -> Project {
     let networks = builder.resources(ResourceKind::Network, &networks);
     let name =
         name.and_then(|entry| Some((value(Some(&entry.value))?, builder.entry_fact(None, &entry))));
+    let names = Names {
+        written: services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect(),
+        services: built
+            .iter()
+            .map(|(service, _)| service.name.as_str())
+            .collect(),
+        volumes: volumes.iter().map(|volume| volume.name.as_str()).collect(),
+        networks: networks
+            .iter()
+            .map(|network| network.name.as_str())
+            .collect(),
+    };
+    let edges = builder.edges(&built, &names);
     let Builder { errors, facts, .. } = builder;
 
-    let edges = edges(&services);
     let (project_name, name_entry) = match name {
         Some((value, entry)) => (
             ProjectName {
@@ -68,7 +83,7 @@ pub(super) fn project(loaded: Loaded, checkout: &Checkout) -> Project {
         model: ProjectModel {
             project_name,
             files: sources.paths(),
-            services: services.into_iter().map(|(service, _)| service).collect(),
+            services: built.into_iter().map(|(service, _)| service).collect(),
             volumes,
             networks,
             edges,
@@ -97,35 +112,66 @@ fn folder_name(first_file: Option<&str>, checkout: &Checkout) -> String {
     name.map(compose_project_name).unwrap_or_default()
 }
 
-/// Service by service: `depends_on`, then links, then the networks it names, then its named
-/// volumes, each edge once.
-fn edges(services: &[(ServiceNode, Vec<String>)]) -> Vec<Edge> {
-    let mut edges = Vec::new();
-    let mut seen = HashSet::new();
-    for (service, links) in services {
-        let volumes = service
-            .volumes
-            .iter()
-            .filter(|mount| mount.kind == MountKind::Named)
-            .filter_map(|mount| mount.source.as_ref());
-        let targets = service
-            .depends_on
-            .iter()
-            .map(|to| (to, EdgeKind::DependsOn))
-            .chain(links.iter().map(|to| (to, EdgeKind::Links)))
-            .chain(service.networks.iter().map(|to| (to, EdgeKind::Network)))
-            .chain(volumes.map(|to| (to, EdgeKind::Volume)));
-        for (to, kind) in targets {
-            if seen.insert((service.name.as_str(), to.as_str(), kind as u8)) {
-                edges.push(Edge {
-                    from: service.name.clone(),
-                    to: to.clone(),
-                    kind,
-                });
-            }
+/// A name a service refers to: the edge it would make, and where the name is written.
+struct Reference {
+    to: String,
+    kind: EdgeKind,
+    file: FileId,
+    byte: usize,
+}
+
+impl Reference {
+    fn new(to: String, kind: EdgeKind, at: &Node) -> Reference {
+        Reference {
+            to,
+            kind,
+            file: at.file,
+            byte: at.span.start,
         }
     }
-    edges
+}
+
+/// The names a service may refer to, in the project once every file has merged.
+struct Names<'a> {
+    /// Every service the files define, the ones whose settings aren't a mapping included.
+    written: HashSet<&'a str>,
+    /// The services in the model.
+    services: HashSet<&'a str>,
+    volumes: HashSet<&'a str>,
+    networks: HashSet<&'a str>,
+}
+
+impl Names<'_> {
+    /// Whether the model has what an edge of `kind` to `to` points at. The implicit `default`
+    /// network is always there, declared or not.
+    fn has(&self, kind: EdgeKind, to: &str) -> bool {
+        match kind {
+            EdgeKind::DependsOn | EdgeKind::Links => self.services.contains(to),
+            EdgeKind::Volume => self.volumes.contains(to),
+            EdgeKind::Network => to == "default" || self.networks.contains(to),
+        }
+    }
+}
+
+/// Why Compose refuses `from`'s reference to `to`, which the project doesn't define.
+fn undefined(from: &str, kind: EdgeKind, to: &str) -> String {
+    let refers = match kind {
+        EdgeKind::DependsOn => format!("depends on {to}"),
+        EdgeKind::Links => format!("links to {to}"),
+        EdgeKind::Volume => format!("mounts volume {to}"),
+        EdgeKind::Network => format!("joins network {to}"),
+    };
+    format!("{from} {refers}, which is not defined; Compose refuses this")
+}
+
+/// Whether an interpolated value still holds a variable nothing provides: a `${`, or a `$` before
+/// a name.
+fn holds_variable(value: &str) -> bool {
+    value.contains("${")
+        || value
+            .as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b'$' && (pair[1] == b'_' || pair[1].is_ascii_alphabetic()))
 }
 
 /// Builds the model's parts, with the facts and the errors it finds.
@@ -176,7 +222,41 @@ impl Builder<'_> {
         }
     }
 
-    fn service(&mut self, defined: &Defined) -> Option<(ServiceNode, Vec<String>)> {
+    /// The edges of every service: `depends_on`, then links, then the networks it names, then its
+    /// named volumes, each edge once. A name the project doesn't define, once every file has
+    /// merged, makes no edge and is an error on where it is written, as Compose refuses it; a
+    /// service whose settings aren't a mapping is already an error, so naming it is not. A name
+    /// that still holds a variable makes neither: the variable is reported as unresolved.
+    fn edges(&mut self, services: &[(ServiceNode, Vec<Reference>)], names: &Names) -> Vec<Edge> {
+        let mut edges = Vec::new();
+        let mut seen = HashSet::new();
+        for (service, references) in services {
+            for reference in references {
+                let (to, kind) = (reference.to.as_str(), reference.kind);
+                if !seen.insert((service.name.as_str(), to, kind as u8)) {
+                    continue;
+                }
+                let written = matches!(kind, EdgeKind::DependsOn | EdgeKind::Links)
+                    && names.written.contains(to);
+                if names.has(kind, to) {
+                    edges.push(Edge {
+                        from: service.name.clone(),
+                        to: to.to_owned(),
+                        kind,
+                    });
+                } else if !written && !holds_variable(to) {
+                    let message = undefined(&service.name, kind, to);
+                    let error = error_at(self.sources, reference.file, reference.byte, message);
+                    self.errors.push(error);
+                }
+            }
+        }
+        edges
+    }
+
+    /// A service, and the names it refers to in edge order: `depends_on`, links, networks, then
+    /// named volumes.
+    fn service(&mut self, defined: &Defined) -> Option<(ServiceNode, Vec<Reference>)> {
         let name = defined.name.as_str();
         let node = &defined.node;
         if !matches!(node.value, Value::Map(_)) {
@@ -187,7 +267,8 @@ impl Builder<'_> {
             return None;
         }
         let ports = self.ports(name, node.get("ports"));
-        let volumes = self.volumes(name, node.get("volumes"));
+        let mut mounted = Vec::new();
+        let volumes = self.volumes(name, node.get("volumes"), &mut mounted);
         let mut container_name = None;
         if let Some(entry) = node.entry("container_name")
             && let Some(text) = value(Some(&entry.value))
@@ -196,27 +277,42 @@ impl Builder<'_> {
             self.facts.container_names.push(fact);
             container_name = Some(text);
         }
-        let links = list(node.get("links"))
-            .into_iter()
-            .map(|link| match link.split_once(':') {
-                Some((to, _)) => to.to_owned(),
-                None => link,
-            })
-            .filter(|to| !to.is_empty())
-            .collect();
+        let links = node
+            .get("links")
+            .map_or(&[][..], Node::items)
+            .iter()
+            .filter_map(|item| {
+                let link = value(Some(item))?;
+                let to = match link.split_once(':') {
+                    Some((to, _)) => to.to_owned(),
+                    None => link,
+                };
+                (!to.is_empty()).then(|| Reference::new(to, EdgeKind::Links, item))
+            });
+        let depends_on = named(node.get("depends_on"), EdgeKind::DependsOn);
+        let networks = named(node.get("networks"), EdgeKind::Network);
+        let to = |references: &[Reference]| -> Vec<String> {
+            references.iter().map(|r| r.to.clone()).collect()
+        };
         let service = ServiceNode {
             name: name.to_owned(),
             image: value(node.get("image")),
             build: build(node.get("build"), &defined.folder),
             ports,
             volumes,
-            networks: names(node.get("networks")),
-            depends_on: names(node.get("depends_on")),
+            networks: to(&networks),
+            depends_on: to(&depends_on),
             container_name,
             profiles: list(node.get("profiles")),
             source: self.source_ref(&defined.key),
         };
-        Some((service, links))
+        let references = depends_on
+            .into_iter()
+            .chain(links)
+            .chain(networks)
+            .chain(mounted)
+            .collect();
+        Some((service, references))
     }
 
     fn ports(&mut self, service: &str, node: Option<&Node>) -> Vec<PortBinding> {
@@ -313,14 +409,29 @@ impl Builder<'_> {
         binding
     }
 
-    fn volumes(&mut self, service: &str, node: Option<&Node>) -> Vec<VolumeMount> {
+    /// A service's mounts, adding each named volume's name to `named`, where its source is written.
+    fn volumes(
+        &mut self,
+        service: &str,
+        node: Option<&Node>,
+        named: &mut Vec<Reference>,
+    ) -> Vec<VolumeMount> {
         let Some(node) = node else {
             return Vec::new();
         };
         match &node.value {
             Value::Seq(items) => items
                 .iter()
-                .filter_map(|item| self.volume(service, item))
+                .filter_map(|item| {
+                    let mount = self.volume(service, item)?;
+                    if mount.kind == MountKind::Named
+                        && let Some(source) = &mount.source
+                    {
+                        let at = item.get("source").unwrap_or(item);
+                        named.push(Reference::new(source.clone(), EdgeKind::Volume, at));
+                    }
+                    Some(mount)
+                })
                 .collect(),
             Value::Null => Vec::new(),
             Value::Scalar(_) | Value::Map(_) => {
@@ -436,15 +547,21 @@ fn list(node: Option<&Node>) -> Vec<String> {
 }
 
 /// The names a list holds, interpolated, or a mapping's keys, as written: keys aren't interpolated.
-fn names(node: Option<&Node>) -> Vec<String> {
+/// Each is a reference of `kind`, at the item or the key that writes it.
+fn named(node: Option<&Node>, kind: EdgeKind) -> Vec<Reference> {
     match node.map(|node| &node.value) {
         Some(Value::Map(entries)) => entries
             .iter()
-            .filter_map(|entry| entry.key.as_str())
-            .filter(|key| !key.is_empty())
-            .map(str::to_owned)
+            .filter_map(|entry| {
+                let key = entry.key.as_str().filter(|key| !key.is_empty())?;
+                Some(Reference::new(key.to_owned(), kind, &entry.key))
+            })
             .collect(),
-        _ => list(node),
+        _ => node
+            .map_or(&[][..], Node::items)
+            .iter()
+            .filter_map(|item| Some(Reference::new(value(Some(item))?, kind, item)))
+            .collect(),
     }
 }
 
