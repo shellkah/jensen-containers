@@ -4,7 +4,7 @@ See a project's container stack from its Compose files: a map, readiness checks 
 
 ## What it does
 
-Step 1 works from the Compose files alone. It starts and stops nothing, uses no network and runs nothing in the background.
+It works from the Compose files alone. It starts and stops nothing, uses no network and runs nothing in the background.
 
 - **A files-only map.** The project's services, the ports they publish, the volumes and networks they use and what depends on what, read from the Compose files. It shows what the files declare, not what is running.
 - **Readiness checks with suggested edits.** Checks for what stops a stack from running twice on one machine, such as a fixed host port or a fixed container name. A finding that a file edit can fix comes with that edit, and nothing changes until you accept it.
@@ -18,7 +18,7 @@ Step 1 works from the Compose files alone. It starts and stops nothing, uses no 
 | `editor: "write"` | to apply a fix only after you accept it, as one undoable edit |
 | `graph` | to link a service to the code it builds from |
 | `backend` | to parse Compose files and run the checks in a sandboxed WebAssembly program that agents call too |
-| `fs` on `*.yaml` and `*.yml` | to read Compose files. It never reads `.env` files, and it never writes one |
+| `fs` on `*.yaml` and `*.yml` | to read Compose files. It never reads `.env` files. The scope also allows writing, but the plugin never writes through it: a fix you accept is applied through the editor, as one undoable change |
 
 It asks for nothing else, and Jensen asks you before granting any of these.
 
