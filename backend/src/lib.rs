@@ -2,8 +2,11 @@
 
 use jensen_plugin_backend::Backend;
 
+pub mod compose;
+pub mod files;
 pub mod interpolate;
 pub mod model;
+pub mod paths;
 pub mod short_syntax;
 pub mod source;
 pub mod yaml;
