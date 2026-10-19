@@ -5,3 +5,6 @@ backend.wasm
 backend/target
 # Jensen canvases are not tracked. Delete the next line to commit them.
 /architecture/
+# Local files Jensen's commit hook refuses: kept on disk, never committed.
+/CLAUDE.md
+/fixtures/env-files/.env
