@@ -95,8 +95,8 @@
   ],
   "errors": [
     {
-      "file": "infra/local/extra.yml",
-      "message": "no such file",
+      "file": "infra/local/docker-compose.yml",
+      "message": "can't include extra.yml: no such file",
       "source": { "file": "infra/local/docker-compose.yml", "line": 3, "column": 4 }
     }
   ]

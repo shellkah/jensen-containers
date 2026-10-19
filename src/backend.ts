@@ -13,6 +13,8 @@ import type { App } from "@jensen-org/plugin-sdk";
 //   define is a `LoadError` instead, and a name that holds an unresolved variable makes no edge.
 //   A network edge's `to` may name the implicit `default` network, which `model.networks` lists
 //   only when a file declares it.
+// - A `LoadError`'s `source`, when present, is in `file`: an include that can't be read is an
+//   error in the file that includes it.
 
 export interface SourceRef {
   file: string;

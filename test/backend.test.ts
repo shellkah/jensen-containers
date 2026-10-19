@@ -101,14 +101,16 @@ test("the mirror matches the JSON the backend writes", () => {
     ],
     errors: [
       {
-        file: "infra/local/extra.yml",
-        message: "no such file",
+        file: "infra/local/docker-compose.yml",
+        message: "can't include extra.yml: no such file",
         source: { file: "infra/local/docker-compose.yml", line: 3, column: 4 },
       },
     ],
   } satisfies AnalyzeResult;
 
   expect(mirror).toEqual(sample);
+  // An error's source, when it has one, is in the file the error is reported in.
+  for (const error of mirror.errors) expect(error.source.file).toBe(error.file);
 });
 
 test("analyze calls the backend's analyze method", async () => {

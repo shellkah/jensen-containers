@@ -466,8 +466,8 @@ mod tests {
                 source: source(14, 20),
             }],
             errors: vec![LoadError {
-                file: "infra/local/extra.yml".into(),
-                message: "no such file".into(),
+                file: "infra/local/docker-compose.yml".into(),
+                message: "can't include extra.yml: no such file".into(),
                 source: Some(source(3, 4)),
             }],
         }
@@ -478,5 +478,11 @@ mod tests {
         let file: serde_json::Value =
             serde_json::from_str(include_str!("../../test/fixtures/analyze-sample.json")).unwrap();
         assert_eq!(serde_json::to_value(sample()).unwrap(), file);
+        // The sample says what the code does: an error's source is in the file it is reported in.
+        for error in sample().errors {
+            if let Some(source) = &error.source {
+                assert_eq!(source.file, error.file, "{error:?}");
+            }
+        }
     }
 }
