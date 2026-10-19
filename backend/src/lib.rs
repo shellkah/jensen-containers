@@ -2,6 +2,10 @@
 
 use jensen_plugin_backend::Backend;
 
+pub mod model;
+pub mod source;
+pub mod yaml;
+
 /// Adds the backend's methods. There are none yet: the next changes register `analyze`, `topology`
 /// and `readiness` here.
 pub fn register(_backend: &mut Backend) {}
