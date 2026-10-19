@@ -11,9 +11,12 @@ pub type FileId = usize;
 /// A file's path and text, with where each line starts.
 ///
 /// Lines break at `\n`, and a line's bytes include its break. A `\r` before the `\n` belongs to
-/// the line but is never part of a column. A byte past the end, or inside a character, clamps to
-/// the character boundary before it, so no method panics. The line starts are worked out by
-/// `new`: build a new one rather than change `text`.
+/// the line but is never part of a column. Offsets count positions the way CodeMirror does, so a
+/// `\r\n` break is one position, like a `\n`: a byte of the break sits at the line's end, and the
+/// next line starts one past it. Byte ranges stay byte ranges into `text`; only the UTF-16
+/// offsets count the break as one. A byte past the end, or inside a character, clamps to the
+/// character boundary before it, so no method panics. The line starts are worked out by `new`:
+/// build a new one rather than change `text`.
 ///
 /// `new` drops a leading byte order mark, as editors and `TextDecoder` do, so lines and offsets
 /// count the text the person sees. Parse `text`, not the file's raw contents, so the YAML tree's
@@ -25,7 +28,8 @@ pub struct SourceText {
     lines: Vec<LineStart>,
 }
 
-/// Where a line starts, in bytes and in UTF-16 units from the start of the file.
+/// Where a line starts, in bytes and in UTF-16 units from the start of the file, each earlier
+/// `\r\n` counted as one unit.
 #[derive(Clone, Copy, Debug, Default)]
 struct LineStart {
     byte: usize,
@@ -40,6 +44,10 @@ impl SourceText {
         let mut lines = vec![LineStart { byte: 0, utf16: 0 }];
         let mut utf16 = 0;
         for (byte, character) in text.char_indices() {
+            // The `\n` of a `\r\n` counts for the whole break.
+            if character == '\r' && text.as_bytes().get(byte + 1) == Some(&b'\n') {
+                continue;
+            }
             utf16 += character.len_utf16();
             if character == '\n' {
                 lines.push(LineStart {
@@ -64,7 +72,8 @@ impl SourceText {
         }
     }
 
-    /// `bytes` as UTF-16 offsets from the start of the file. A reversed range is empty at its start.
+    /// `bytes` as UTF-16 offsets from the start of the file, a `\r\n` counted as one position. A
+    /// reversed range is empty at its start.
     pub fn span(&self, bytes: Range<usize>) -> Span {
         let bytes = self.clamp_range(bytes);
         Span {
@@ -105,13 +114,12 @@ impl SourceText {
         bytes.start + content.len()
     }
 
+    /// The CodeMirror offset of `byte`: its line's start, then its column. A byte of the line
+    /// break stops at the line's end, as a column does, so a `\r` is never counted.
     fn utf16_offset(&self, byte: usize) -> usize {
-        let start = self
-            .lines
-            .get(self.line_of(byte))
-            .copied()
-            .unwrap_or_default();
-        start.utf16 + self.utf16_len(start.byte..byte)
+        let line = self.line_of(byte);
+        let start = self.lines.get(line).copied().unwrap_or_default();
+        start.utf16 + self.utf16_len(start.byte..byte.min(self.content_end(line)))
     }
 
     fn utf16_len(&self, bytes: Range<usize>) -> usize {
@@ -197,7 +205,26 @@ mod tests {
                 column: 3
             }
         );
-        assert_eq!(source.span(9..10), Span { from: 9, to: 10 });
+        // CodeMirror counts a `\r\n` break as one position, so `x` is at 8, not at its byte 9.
+        assert_eq!(source.span(9..10), Span { from: 8, to: 9 });
+
+        // Each `\r\n` before the value takes one more off: two lines before, two off.
+        let source = SourceText::new("a.yml".into(), "a: 1\r\nb: 2\r\nc: x\r\n".into());
+        assert_eq!(
+            source.source_ref(15),
+            SourceRef {
+                file: "a.yml".into(),
+                line: 2,
+                column: 3
+            }
+        );
+        assert_eq!(source.span(15..16), Span { from: 13, to: 14 });
+        // A span over a whole line ends where the next line starts, one past its break.
+        assert_eq!(source.span(6..12), Span { from: 5, to: 10 });
+        // The `\r` and the `\n` of a break both sit at the line's end, as columns do.
+        assert_eq!(source.span(4..5), Span { from: 4, to: 4 });
+        assert_eq!(source.span(5..6), Span { from: 4, to: 5 });
+        assert_eq!(source.span(0..99), Span { from: 0, to: 15 });
     }
 
     #[test]

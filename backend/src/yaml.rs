@@ -755,7 +755,8 @@ mod tests {
                 column: 3
             }
         );
-        assert_eq!(source.span(b.span.clone()), Span { from: 9, to: 10 });
+        // CodeMirror counts the `\r\n` before `x` as one position.
+        assert_eq!(source.span(b.span.clone()), Span { from: 8, to: 9 });
         let c = root.get("c").unwrap();
         assert_eq!(at(text, c), "d: y");
         assert_eq!(source.source_ref(c.last_byte()).line, 3);

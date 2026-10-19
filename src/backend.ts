@@ -5,6 +5,7 @@ import type { App } from "@jensen-org/plugin-sdk";
 // Conventions that hold for every interface below:
 // - Lines and columns are zero-based.
 // - Columns and offsets count UTF-16 code units, the way the editor and `replaceRange` count them.
+//   Offsets count a `\r\n` line break as one position, as CodeMirror does.
 // - Every path is relative to the checkout root (the folder `checkout` names, or the project root);
 //   a caller that passed a checkout prefixes it to open a file.
 // - An edge's `from` is always a service. Its `to` is a service for `depends_on` and `links`, a
