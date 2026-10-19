@@ -1,0 +1,4 @@
+services:
+  worker:
+    extends: { file: ../common/base.yml, service: base }
+    command: ["worker"]

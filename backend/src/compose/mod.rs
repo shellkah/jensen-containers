@@ -1,13 +1,14 @@
 //! Loads Compose files into the project model, with the facts the readiness rules read.
 //!
-//! Loading has two passes. [`load`] reads the files and gathers the services, volumes and networks
-//! they define as YAML trees, whose every node keeps the file and bytes it is written at. [`build`]
-//! then turns those trees into the model and the facts, taking each position from its node's own
-//! file through [`Sources`].
+//! Loading has two passes. [`load`] reads the files, follows `include` and `extends`, and merges
+//! what they define the way `docker compose -f a -f b` does ([`merge`]), as YAML trees whose every
+//! node keeps the file and bytes it is written at. [`build`] then turns the merged trees into the
+//! model and the facts, taking each position from its node's own file through [`Sources`].
 
 mod build;
 mod facts;
 mod load;
+mod merge;
 mod variables;
 
 #[cfg(test)]
@@ -33,8 +34,11 @@ pub struct Project {
     pub facts: Facts,
 }
 
-/// Loads each Compose file of `paths`, relative to the checkout root, read under `checkout`. Each
-/// file loads on its own. A path that leaves the checkout, a file that can't be read, and a part
+/// Loads the Compose files of `paths`, relative to the checkout root, as `docker compose -f a
+/// -f b` would: in order, each merged over the ones before, following `include` and `extends`.
+/// Every read goes through `checkout`, and every path the result reports is relative to the
+/// checkout root; `model.files` lists the files read, in reading order. A path that leaves the
+/// checkout, a file that can't be read, an include or extends that can't be followed, and a part
 /// of a file that has the wrong shape are [`LoadError`]s, and the rest still loads.
 pub fn load_project(files: &dyn ReadFile, checkout: &Checkout, paths: &[String]) -> Project {
     let loaded = load::Loader::new(files, checkout).project(paths);
