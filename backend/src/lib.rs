@@ -9,6 +9,7 @@ pub mod interpolate;
 pub mod methods;
 pub mod model;
 pub mod paths;
+pub mod render;
 pub mod rules;
 pub mod short_syntax;
 pub mod source;
