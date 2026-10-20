@@ -12,6 +12,7 @@ pub mod paths;
 pub mod rules;
 pub mod short_syntax;
 pub mod source;
+pub mod tools;
 pub mod yaml;
 
 /// Registers the backend's methods: `analyze`, which loads Compose files into the project model.

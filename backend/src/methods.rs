@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::compose::load_project;
 use crate::files::ReadFile;
 use crate::model::AnalyzeResult;
-use crate::paths::{CHECKOUT_REFUSED, Checkout, normalize};
+use crate::paths::{CHECKOUT_REFUSED, Checkout, file_path};
 use crate::rules::readiness;
 
 /// Loads the Compose files of `paths`, relative to the checkout root, into the project model.
@@ -41,17 +41,6 @@ pub fn analyze_method(files: &dyn ReadFile, input: Value) -> Result<Value, Strin
     let checkout = Checkout::parse(checkout)?;
     serde_json::to_value(analyze(files, &checkout, &paths))
         .map_err(|error| format!("the result can't be written as json: {error}"))
-}
-
-/// A file path from the input, normalized. One that leaves the checkout is refused, and so is one
-/// that names the checkout root itself (`""`, `.`), which would read the folder.
-fn file_path(written: &str) -> Result<String, String> {
-    match normalize(written)? {
-        path if path.is_empty() => Err(format!(
-            "{written:?} names the checkout root, not a Compose file"
-        )),
-        path => Ok(path),
-    }
 }
 
 #[cfg(test)]

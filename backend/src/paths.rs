@@ -48,6 +48,29 @@ impl Checkout {
     pub fn folder_name(&self) -> Option<&str> {
         self.root.rsplit('/').next().filter(|name| !name.is_empty())
     }
+
+    /// Whether the checkout is a worktree folder: `.jensen/worktrees/<name>` or
+    /// `.claude/worktrees/<name>`, or a folder below one. Not the primary checkout, and not the
+    /// `worktrees` folder itself.
+    pub fn is_worktree(&self) -> bool {
+        let mut segments = self.root.split('/');
+        matches!(
+            (segments.next(), segments.next(), segments.next()),
+            (Some(".jensen" | ".claude"), Some("worktrees"), Some(name)) if !name.is_empty()
+        )
+    }
+}
+
+/// A file path from a caller, relative to the checkout root, normalized. One that leaves the
+/// checkout is refused, and so is one that names the checkout root itself (`""`, `.`), which would
+/// read the folder.
+pub fn file_path(written: &str) -> Result<String, String> {
+    match normalize(written)? {
+        path if path.is_empty() => Err(format!(
+            "{written:?} names the checkout root, not a Compose file"
+        )),
+        path => Ok(path),
+    }
 }
 
 /// `path` with `.` and empty segments dropped and `a/../b` folded. A path that climbs above the
