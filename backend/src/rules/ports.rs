@@ -2,6 +2,7 @@
 //! bind at a time.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use crate::compose::{PortFact, PortForm, Project};
 use crate::edits::replace;
@@ -10,14 +11,13 @@ use crate::source::SourceText;
 
 /// One finding per fixed host port as written: a port an anchor or `extends` gives several
 /// services is one finding, named after the service that writes it. Each finding's edit moves the
-/// port to a variable defaulting to it, a different variable for every port and none another
-/// port already uses.
+/// port to a variable defaulting to it, a different variable for every port and none the files
+/// already name anywhere. A port written as a block scalar gets no edit.
 pub fn fixed_host_port(project: &Project) -> Vec<Finding> {
     let ports = &project.facts.ports;
     let mut written = HashSet::new();
-    let mut writers = HashSet::new();
-    // A fix never reuses a variable a port already reads its host port from.
-    let mut taken = port_variables(project);
+    // A fix never reuses a variable the files already name, for a port or anything else.
+    let mut taken = file_variables(project);
     let mut findings = Vec::new();
     for fact in ports.iter().filter(|fact| fact.fixed) {
         if !written.insert((fact.file, fact.bytes.start, fact.bytes.end)) {
@@ -28,7 +28,12 @@ pub fn fixed_host_port(project: &Project) -> Vec<Finding> {
             continue;
         };
         let writer = writer(project, source, fact);
-        let first = writers.insert(writer);
+        // The writer's first port of any kind, fixed or not, so fixing one port leaves the
+        // others' names as they were.
+        let first = ports
+            .iter()
+            .find(|other| other.service == writer)
+            .is_some_and(|other| other.file == fact.file && other.bytes == fact.bytes);
         let variable = unused(
             port_variable(writer, &container(project, source, fact), first),
             &mut taken,
@@ -59,15 +64,16 @@ pub fn fixed_host_port(project: &Project) -> Vec<Finding> {
             lead: false,
             source: source.source_ref(fact.bytes.start),
             span: Some(source.span(fact.bytes.clone())),
-            edit: Some(replace(source, fact.bytes.clone(), new_text, title)),
+            edit: (!block_scalar(source, &fact.bytes))
+                .then(|| replace(source, fact.bytes.clone(), new_text, title)),
         });
     }
     findings
 }
 
-/// The variable a service's host port moves to: `<SERVICE>_PORT` for its first, then with the
-/// container port appended. Every character outside `A-Z0-9` becomes `_`, and a name starting
-/// with a digit gets a `_` in front.
+/// The variable a service's host port moves to: `<SERVICE>_PORT` for the service's first port,
+/// fixed or not, then with the container port appended. Every character outside `A-Z0-9`
+/// becomes `_`, and a name starting with a digit gets a `_` in front.
 pub fn port_variable(service: &str, container: &str, first: bool) -> String {
     let name = if first {
         format!("{service}_PORT")
@@ -119,7 +125,8 @@ fn container(project: &Project, source: &SourceText, fact: &PortFact) -> String 
         .unwrap_or_default()
 }
 
-/// `name`, or with `_2`, `_3`, ... appended when an earlier finding took it; taken from now on.
+/// `name`, or with `_2`, `_3`, ... appended while `taken` holds it: the files name it, or an
+/// earlier finding's fix took it. Taken from now on.
 fn unused(name: String, taken: &mut HashSet<String>) -> String {
     let mut candidate = name.clone();
     let mut number = 2;
@@ -130,22 +137,13 @@ fn unused(name: String, taken: &mut HashSet<String>) -> String {
     candidate
 }
 
-/// The variables the ports' host parts already use, as written, with or without a default: a
-/// short port's host segment, a long port's `published` value. A long port without `published`
-/// has its bytes on `target`; reading its names too only costs a fix a suffix.
-fn port_variables(project: &Project) -> HashSet<String> {
-    project
-        .facts
-        .ports
-        .iter()
-        .flat_map(|fact| match &fact.form {
-            PortForm::Short(parts) => parts.host.as_deref().map(variable_names),
-            PortForm::Long => project
-                .sources
-                .get(fact.file)
-                .map(|source| variable_names(source.slice(fact.bytes.clone()))),
-        })
-        .flatten()
+/// Every variable the files read name, as written, with or without a default, wherever it is:
+/// a port's host part, but also an `environment` value or a comment. A port fix moving to one of
+/// them would also change whatever else reads it, so each costs a fix a suffix instead.
+fn file_variables(project: &Project) -> HashSet<String> {
+    (0..)
+        .map_while(|id| project.sources.get(id))
+        .flat_map(|source| variable_names(&source.text))
         .collect()
 }
 
@@ -184,6 +182,31 @@ fn variable_names(text: &str) -> Vec<String> {
     names
 }
 
+/// Whether `bytes` of `source` are a block scalar's (`|` or `>`), whose text spans the lines below
+/// its indicator: the bytes start at the indicator, or the last line before them, past the line
+/// break and indentation, ends with one, its chomping and indentation indicators, and an optional
+/// comment. Replacing them would leave the indicator behind.
+fn block_scalar(source: &SourceText, bytes: &Range<usize>) -> bool {
+    let text = source.text.as_str();
+    if matches!(text.as_bytes().get(bytes.start), Some(b'|' | b'>')) {
+        return true;
+    }
+    let before = text.get(..bytes.start).unwrap_or_default();
+    let line = before
+        .trim_end_matches([' ', '\t', '\r', '\n'])
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default();
+    let line = line.find(" #").map_or(line, |comment| &line[..comment]);
+    let indicator = line
+        .trim_end()
+        .rsplit([' ', '\t'])
+        .next()
+        .unwrap_or_default();
+    let mut chars = indicator.chars();
+    matches!(chars.next(), Some('|' | '>')) && chars.all(|c| matches!(c, '-' | '+' | '1'..='9'))
+}
+
 /// `text` as a double-quoted YAML scalar.
 fn quoted(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
@@ -198,9 +221,11 @@ fn message(service: &str, host: &str, variable: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::one;
+    use crate::compose::{load_project, one};
     use crate::edits::apply;
+    use crate::files::MemFiles;
     use crate::model::{Affects, RuleId, SourceRef, Span};
+    use crate::paths::Checkout;
 
     /// The text of a span, for ASCII texts where UTF-16 offsets are byte offsets.
     fn spanned<'t>(text: &'t str, span: &Span) -> &'t str {
@@ -322,6 +347,11 @@ mod tests {
         let texts = new_texts(
             "services:\n  db:\n    ports:\n      - \"${DB_PORT:-5432}:5432\"\n      - \"6543:6543\"\n",
         );
+        // The variable port is db's first, so the fixed one is its second.
+        assert_eq!(texts, ["\"${DB_PORT_6543:-6543}:6543\""]);
+        let texts = new_texts(
+            "services:\n  db:\n    ports:\n      - \"6543:6543\"\n      - \"${DB_PORT:-5432}:5432\"\n",
+        );
         assert_eq!(texts, ["\"${DB_PORT_2:-6543}:6543\""]);
         // Without a default, in long syntax, as `$NAME`, and in a later service's port, too.
         let texts = new_texts(
@@ -331,7 +361,7 @@ mod tests {
             texts,
             [
                 "\"${WEB_PORT_2:-8080}:80\"",
-                "\"${API_PORT_3:-9000}:90\"",
+                "\"${API_PORT_90:-9000}:90\"",
                 "\"${CACHE_PORT:-6379}:6379\"",
             ]
         );
@@ -340,6 +370,50 @@ mod tests {
             variable_names("$$DB_PORT${A}$B${C:-${D:-1}}$"),
             ["A", "B", "C", "D"]
         );
+    }
+
+    #[test]
+    fn a_partial_fix_keeps_the_names_of_the_other_ports() {
+        let text = "services:\n  db:\n    image: pg\n    ports:\n      - \"5432:5432\"\n      - \"6543:6543\"\n";
+        assert_eq!(
+            new_texts(text),
+            [
+                "\"${DB_PORT:-5432}:5432\"",
+                "\"${DB_PORT_6543:-6543}:6543\""
+            ]
+        );
+        // Apply only the first edit: the second port is still offered the same variable.
+        let edit = fixed_host_port(&one(text))[0].edit.clone().unwrap();
+        let fixed = apply(text, &edit);
+        assert_eq!(new_texts(&fixed), ["\"${DB_PORT_6543:-6543}:6543\""]);
+    }
+
+    #[test]
+    fn a_variable_the_files_name_anywhere_is_taken() {
+        // The app reads DB_PORT for db's container port: setting it must not move db's host port.
+        let texts = new_texts(
+            "services:\n  db:\n    image: pg\n    ports:\n      - \"5432:5432\"\n  app:\n    image: app\n    environment:\n      DATABASE_URL: postgres://db:${DB_PORT:-5432}/x\n",
+        );
+        assert_eq!(texts, ["\"${DB_PORT_2:-5432}:5432\""]);
+        // A name in another of the -f files counts too.
+        let files = MemFiles::from([
+            (
+                "a.yaml",
+                "services:\n  web:\n    ports:\n      - \"8080:80\"\n",
+            ),
+            (
+                "b.yaml",
+                "services:\n  web:\n    environment:\n      URL: http://web:$WEB_PORT\n",
+            ),
+        ]);
+        let paths = ["a.yaml".to_string(), "b.yaml".to_string()];
+        let project = load_project(&files, &Checkout::primary(), &paths);
+        assert!(project.errors.is_empty(), "{:?}", project.errors);
+        let texts: Vec<_> = fixed_host_port(&project)
+            .into_iter()
+            .map(|finding| finding.edit.unwrap().new_text)
+            .collect();
+        assert_eq!(texts, ["\"${WEB_PORT_2:-8080}:80\""]);
     }
 
     #[test]
@@ -370,6 +444,33 @@ mod tests {
             apply(text, &edit),
             "services:\n  web:\n    ports:\n      - \"${WEB_PORT:-8080}:80\"\n"
         );
+    }
+
+    #[test]
+    fn a_port_in_a_block_scalar_has_no_edit() {
+        for text in [
+            "services:\n  web:\n    image: x\n    ports:\n      - >-\n        8080:80\n",
+            "services:\n  web:\n    image: x\n    ports:\n      - |\n        8080:80\n",
+            "services:\n  web:\n    image: x\n    ports:\n      - |+2 # kept\n        8080:80\n",
+            "services:\n  web:\n    image: x\n    ports:\n      - target: 80\n        published: >\n          8080\n",
+        ] {
+            let project = one(text);
+            assert!(project.errors.is_empty(), "{text:?}: {:?}", project.errors);
+            let findings = fixed_host_port(&project);
+            assert_eq!(findings.len(), 1, "{text:?}");
+            assert!(findings[0].edit.is_none(), "{text:?}");
+        }
+        // Whether the bytes start at the indicator or at the text below it.
+        let source = SourceText::new("c.yaml".into(), "- >-\n  8080:80\n".into());
+        assert!(block_scalar(&source, &(2..14)));
+        assert!(block_scalar(&source, &(7..14)));
+        assert!(!block_scalar(
+            &SourceText::new("c.yaml".into(), "- 8080:80\n".into()),
+            &(2..9)
+        ));
+        // A `>` or `|` elsewhere before a port doesn't count.
+        let text = "services:\n  web:\n    image: x\n    command: a > b # or |\n    ports:\n      - 8080:80\n";
+        assert_eq!(new_texts(text), ["\"${WEB_PORT:-8080}:80\""]);
     }
 
     #[test]
