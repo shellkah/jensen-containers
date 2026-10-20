@@ -1,13 +1,11 @@
-//! What the two agent tools share: how they read their input, which Compose files they load when
-//! the input names none, and which findings they keep.
+//! What the two agent tools share: how they read their input and which Compose files they load
+//! when the input names none.
 
 use serde_json::Value;
 
 use crate::compose::{Project, load_project};
 use crate::files::ReadFile;
-use crate::model::{Finding, RuleId};
 use crate::paths::{Checkout, file_path};
-use crate::rules::readiness;
 
 const WRONG_TYPE: &str = "checkout must be text and files a list of paths";
 const BAD_FILE: &str =
@@ -94,16 +92,6 @@ pub fn load_for_tool(files: &dyn ReadFile, input: &ToolInput) -> ToolLoad {
         },
     };
     ToolLoad::Loaded(load_project(files, &input.checkout, &paths))
-}
-
-/// The readiness findings an agent hears of: `same_project_name` only matters to an agent working
-/// in a worktree, where a second checkout of the project can exist beside the first.
-pub fn tool_findings(project: &Project, checkout: &Checkout) -> Vec<Finding> {
-    let mut findings = readiness(project);
-    if !checkout.is_worktree() {
-        findings.retain(|finding| finding.rule != RuleId::SameProjectName);
-    }
-    findings
 }
 
 #[cfg(test)]
@@ -261,59 +249,5 @@ mod tests {
         assert_eq!(project.model.files, ["compose.yaml", "infra/db.yaml"]);
         let services: Vec<_> = project.model.services.iter().map(|s| &*s.name).collect();
         assert_eq!(services, ["web", "db"]);
-    }
-
-    #[test]
-    fn worktree_folders_are_checkouts_of_a_worktree() {
-        for (root, worktree) in [
-            ("", false),
-            ("infra", false),
-            (".jensen", false),
-            (".jensen/worktrees", false),
-            (".claude/worktrees", false),
-            (".jensen/worktrees/a", true),
-            (".claude/worktrees/b", true),
-            (".jensen/worktrees/a/sub", true),
-            (".claude/worktrees/b/sub/deeper", true),
-            ("x/.jensen/worktrees/a", false),
-            (".git/worktrees/a", false),
-        ] {
-            let checkout = Checkout::parse(Some(root)).unwrap();
-            assert_eq!(checkout.is_worktree(), worktree, "{root:?}");
-        }
-    }
-
-    #[test]
-    fn same_project_name_is_kept_only_inside_a_worktree() {
-        let rules = |checkout: &str| -> Vec<RuleId> {
-            let checkout = Checkout::parse(Some(checkout)).unwrap();
-            let files = MemFiles::from([(
-                checkout
-                    .read_path("infra/local/docker-compose.yml")
-                    .as_str(),
-                HORUS,
-            )]);
-            let input = ToolInput {
-                checkout: checkout.clone(),
-                files: Some(vec!["infra/local/docker-compose.yml".to_owned()]),
-            };
-            let ToolLoad::Loaded(project) = load_for_tool(&files, &input) else {
-                panic!("expected a project");
-            };
-            tool_findings(&project, &checkout)
-                .iter()
-                .map(|finding| finding.rule)
-                .collect()
-        };
-        for root in [".jensen/worktrees/a", ".claude/worktrees/b"] {
-            assert!(rules(root).contains(&RuleId::SameProjectName), "{root}");
-        }
-        for root in ["", "infra", ".jensen/worktrees"] {
-            let rules = rules(root);
-            assert!(!rules.contains(&RuleId::SameProjectName), "{root}");
-            // The other rules are untouched.
-            assert!(rules.contains(&RuleId::FixedHostPort), "{root}");
-            assert!(rules.contains(&RuleId::UnprovidedVariable), "{root}");
-        }
     }
 }

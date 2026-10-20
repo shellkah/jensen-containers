@@ -48,17 +48,6 @@ impl Checkout {
     pub fn folder_name(&self) -> Option<&str> {
         self.root.rsplit('/').next().filter(|name| !name.is_empty())
     }
-
-    /// Whether the checkout is a worktree folder: `.jensen/worktrees/<name>` or
-    /// `.claude/worktrees/<name>`, or a folder below one. Not the primary checkout, and not the
-    /// `worktrees` folder itself.
-    pub fn is_worktree(&self) -> bool {
-        let mut segments = self.root.split('/');
-        matches!(
-            (segments.next(), segments.next(), segments.next()),
-            (Some(".jensen" | ".claude"), Some("worktrees"), Some(name)) if !name.is_empty()
-        )
-    }
 }
 
 /// A file path from a caller, relative to the checkout root, normalized. One that leaves the

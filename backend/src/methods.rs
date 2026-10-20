@@ -8,7 +8,7 @@ use crate::model::{AnalyzeResult, Finding};
 use crate::paths::{CHECKOUT_REFUSED, Checkout, file_path};
 use crate::render::{no_compose_file_text, readiness_text, topology_text};
 use crate::rules::readiness;
-use crate::tools::{ToolInput, ToolLoad, load_for_tool, tool_findings};
+use crate::tools::{ToolInput, ToolLoad, load_for_tool};
 
 /// Loads the Compose files of `paths`, relative to the checkout root, into the project model.
 /// Findings are the readiness rules' on that project, `same_project_name` included: the backend
@@ -69,7 +69,7 @@ fn answer(
     let text = match load_for_tool(files, &input) {
         ToolLoad::NoComposeFile => no_compose_file_text(&input.checkout),
         ToolLoad::Loaded(project) => {
-            let findings = tool_findings(&project, &input.checkout);
+            let findings = readiness(&project);
             render(&project, &findings, &input.checkout)
         }
     };
@@ -185,6 +185,21 @@ mod tests {
                 "Fix: replace \"127.0.0.1:5432:5432\" with \"127.0.0.1:${DB_PORT:-5432}:5432\"."
             ),
             "{readiness}"
+        );
+    }
+
+    #[test]
+    fn readiness_keeps_the_project_name_without_a_checkout() {
+        // A session in a worktree passes no checkout: Jensen reads its own files, so the backend
+        // sees the primary checkout and must still tell of the name every checkout shares.
+        let files = MemFiles::from([("infra/local/docker-compose.yml", HORUS)]);
+        let input = json!({ "files": ["infra/local/docker-compose.yml"] });
+        let reply = readiness_method(&files, input).unwrap();
+        let text = reply["text"].as_str().unwrap();
+        assert!(text.starts_with("Readiness of infra/local/docker-compose.yml: 3 problems stop copies of this stack from running side by side.\n1. db publishes host port 5432"), "{text}");
+        assert!(
+            text.contains("\n2. Every checkout names this Compose project \"local\""),
+            "{text}"
         );
     }
 

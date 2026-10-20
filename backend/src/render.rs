@@ -464,7 +464,7 @@ mod tests {
     use super::*;
     use crate::compose::load_project;
     use crate::files::MemFiles;
-    use crate::tools::tool_findings;
+    use crate::rules::readiness;
 
     const HORUS: &str = include_str!("../../fixtures/horus-like/infra/local/docker-compose.yml");
     const HOST_APP: &str = include_str!("../../fixtures/host-app/compose.yaml");
@@ -484,7 +484,7 @@ mod tests {
     }
 
     fn readiness_of(project: &Project, checkout: &Checkout) -> String {
-        readiness_text(project, &tool_findings(project, checkout), checkout)
+        readiness_text(project, &readiness(project), checkout)
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn readiness_of_the_horus_like_layout() {
         let project = horus_like();
-        let text = readiness_text(&project, &tool_findings(&project, &feat_x()), &feat_x());
+        let text = readiness_text(&project, &readiness(&project), &feat_x());
         assert!(text.starts_with("Readiness of infra/local/docker-compose.yml in .jensen/worktrees/feat-x: 3 problems stop copies of this stack from running side by side.\n1. db publishes host port 5432"), "{text}");
         assert!(text.contains("(infra/local/docker-compose.yml:21)\n   Affects: agents' copies, copies started by hand.\n   Fix: replace \"127.0.0.1:5432:5432\" with \"127.0.0.1:${DB_PORT:-5432}:5432\".\n"), "{text}");
         assert!(
@@ -563,14 +563,17 @@ mod tests {
     }
 
     #[test]
-    fn readiness_outside_a_worktree_leaves_the_project_name_out() {
+    fn readiness_keeps_the_project_name_without_a_checkout() {
         let primary = Checkout::primary();
         let project = load(&primary, FILE, HORUS);
         let text = readiness_of(&project, &primary);
-        assert!(text.starts_with("Readiness of infra/local/docker-compose.yml: 2 problems stop copies of this stack from running side by side.\n1. db publishes host port 5432"), "{text}");
-        assert!(!text.contains("Every checkout names"), "{text}");
+        assert!(text.starts_with("Readiness of infra/local/docker-compose.yml: 3 problems stop copies of this stack from running side by side.\n1. db publishes host port 5432"), "{text}");
         assert!(
-            text.contains("\n2. Lead: 5 variables have no default"),
+            text.contains("\n2. Every checkout names this Compose project \"local\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n3. Lead: 5 variables have no default"),
             "{text}"
         );
         let topology = topology_text(&project, &primary);
@@ -801,7 +804,7 @@ mod tests {
             "compose.yaml",
             "services:\n  db:\n    image: pg\n    container_name: app-db\n  web:\n    image: nginx\n    container_name: app-web\n",
         );
-        let findings = tool_findings(&project, &primary);
+        let findings = readiness(&project);
         let text = readiness_text(&project, &findings, &primary);
         assert!(text.contains(", deleting line 4.\n"), "{text}");
         assert!(text.contains(", deleting line 7.\n"), "{text}");
@@ -813,7 +816,7 @@ mod tests {
             "compose.yaml",
             "services:\n  db:\n    image: pg\n    container_name: app-db",
         );
-        let text = readiness_text(&project, &tool_findings(&project, &primary), &primary);
+        let text = readiness_text(&project, &readiness(&project), &primary);
         assert!(text.contains(", deleting line 4.\n"), "{text}");
     }
 
