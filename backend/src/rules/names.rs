@@ -69,30 +69,42 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
     fixed.sort_by_key(|entry| (entry.file, entry.key.start));
     let first = *fixed.first()?;
     let source = project.sources.get(first.file)?;
-    let (kind, noun, shares, nodes) = match resource.kind {
-        ResourceKind::Volume => ("Volume", "volume", "uses the same", &project.model.volumes),
-        ResourceKind::Network => (
-            "Network",
-            "network",
-            "joins the same",
-            &project.model.networks,
-        ),
+    let (noun, nodes) = match resource.kind {
+        ResourceKind::Volume => ("volume", &project.model.volumes),
+        ResourceKind::Network => ("network", &project.model.networks),
     };
-    let resource_name = &resource.name;
+    let n = &resource.name;
     let message = if external.is_some() {
-        format!(
-            "{kind} {resource_name} is external, so every copy of the stack {shares} existing {noun} and shares its data. Removing external: (and its name:) lets each copy create its own {noun}, which starts empty."
-        )
+        // The edit removes a name: entry only when it is a fixed mark; so does the wording, edit
+        // or not.
+        let and_name = if name.is_some() {
+            " (and its name:)"
+        } else {
+            ""
+        };
+        match resource.kind {
+            ResourceKind::Volume => format!(
+                "Volume {n} is external, so every copy of the stack uses the same existing volume and shares its data. Removing external:{and_name} lets each copy create its own volume, which starts empty."
+            ),
+            ResourceKind::Network => format!(
+                "Network {n} is external, so every copy of the stack joins the same existing network. Removing external:{and_name} lets each copy create its own network."
+            ),
+        }
     } else {
         // The model's name, as the files merge it; the entry's own text should it be missing.
-        let fixed_name = nodes
+        let x = nodes
             .iter()
-            .find(|node| node.name == *resource_name)
+            .find(|node| node.name == *n)
             .and_then(|node| node.fixed_name.clone())
             .unwrap_or_else(|| first.text.clone());
-        format!(
-            "{kind} {resource_name} has the fixed name {fixed_name}, so every copy of the stack {shares} {noun} and shares its data. Removing name: gives each copy its own {noun}, named after its project; the data in {fixed_name} stays where it is."
-        )
+        match resource.kind {
+            ResourceKind::Volume => format!(
+                "Volume {n} has the fixed name {x}, so every copy of the stack uses the same volume and shares its data. Removing name: gives each copy its own volume, named after its project; the data in {x} stays where it is."
+            ),
+            ResourceKind::Network => format!(
+                "Network {n} has the fixed name {x}, so every copy of the stack joins the same network. Removing name: gives each copy its own network, named after its project."
+            ),
+        }
     };
     Some(Finding {
         rule: RuleId::SharedFixedName,
@@ -287,17 +299,34 @@ mod tests {
         assert_eq!(
             messages(&findings),
             [
-                "Network shared has the fixed name shared-net, so every copy of the stack joins the same network and shares its data. Removing name: gives each copy its own network, named after its project; the data in shared-net stays where it is."
+                "Network shared has the fixed name shared-net, so every copy of the stack joins the same network. Removing name: gives each copy its own network, named after its project."
             ]
         );
         let edit = findings[0].edit.as_ref().unwrap();
         assert_eq!(edit.title, "Give each copy its own network");
         assert_eq!(apply(text, edit), "networks:\n  shared:\n");
+    }
+
+    #[test]
+    fn an_external_network_is_a_finding() {
+        let text = "networks:\n  outside:\n    external: true\n    name: lan\n";
+        let findings = shared_fixed_name(&one(text));
+        assert_eq!(
+            messages(&findings),
+            [
+                "Network outside is external, so every copy of the stack joins the same existing network. Removing external: (and its name:) lets each copy create its own network."
+            ]
+        );
+        assert_eq!(
+            apply(text, findings[0].edit.as_ref().unwrap()),
+            "networks:\n  outside:\n"
+        );
+        // Without a name: entry, the edit removes external: alone, and the message says so.
         let findings = shared_fixed_name(&one("networks:\n  outside:\n    external: true\n"));
         assert_eq!(
             messages(&findings),
             [
-                "Network outside is external, so every copy of the stack joins the same existing network and shares its data. Removing external: (and its name:) lets each copy create its own network, which starts empty."
+                "Network outside is external, so every copy of the stack joins the same existing network. Removing external: lets each copy create its own network."
             ]
         );
     }
@@ -310,8 +339,13 @@ mod tests {
         // external: true still counts; the edit removes it and leaves the name the variable sets.
         let text = "volumes:\n  data:\n    name: ${DATA_VOLUME}\n    external: true\n";
         let findings = shared_fixed_name(&one(text));
-        assert_eq!(findings.len(), 1);
-        assert!(findings[0].message.starts_with("Volume data is external, "));
+        // The edit keeps the name: entry, so the message doesn't say it goes.
+        assert_eq!(
+            messages(&findings),
+            [
+                "Volume data is external, so every copy of the stack uses the same existing volume and shares its data. Removing external: lets each copy create its own volume, which starts empty."
+            ]
+        );
         assert_eq!(spanned(text, findings[0].span.as_ref().unwrap()), "true");
         assert_eq!(
             apply(text, findings[0].edit.as_ref().unwrap()),
@@ -325,7 +359,10 @@ mod tests {
             "volumes:\n  data:\n    external:\n      name: shared\n",
         ));
         assert_eq!(findings.len(), 1);
-        assert!(findings[0].message.starts_with("Volume data is external, "));
+        // No name: entry, so the wording leaves it out even with no edit.
+        assert!(findings[0].message.ends_with(
+            " Removing external: lets each copy create its own volume, which starts empty."
+        ));
         assert!(findings[0].edit.is_none());
     }
 
