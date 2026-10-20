@@ -10,12 +10,14 @@ use crate::source::SourceText;
 
 /// One finding per fixed host port as written: a port an anchor or `extends` gives several
 /// services is one finding, named after the service that writes it. Each finding's edit moves the
-/// port to a variable defaulting to it, a different variable for every port.
+/// port to a variable defaulting to it, a different variable for every port and none another
+/// port already uses.
 pub fn fixed_host_port(project: &Project) -> Vec<Finding> {
     let ports = &project.facts.ports;
     let mut written = HashSet::new();
     let mut writers = HashSet::new();
-    let mut taken = HashSet::new();
+    // A fix never reuses a variable a port already reads its host port from.
+    let mut taken = port_variables(project);
     let mut findings = Vec::new();
     for fact in ports.iter().filter(|fact| fact.fixed) {
         if !written.insert((fact.file, fact.bytes.start, fact.bytes.end)) {
@@ -141,6 +143,60 @@ fn unused(name: String, taken: &mut HashSet<String>) -> String {
         number += 1;
     }
     candidate
+}
+
+/// The variables the ports' host parts already use, as written, with or without a default: a
+/// short port's host segment, a long port's `published` value. A long port without `published`
+/// has its bytes on `target`; reading its names too only costs a fix a suffix.
+fn port_variables(project: &Project) -> HashSet<String> {
+    project
+        .facts
+        .ports
+        .iter()
+        .flat_map(|fact| match &fact.form {
+            PortForm::Short(parts) => parts.host.as_deref().map(variable_names),
+            PortForm::Long => project
+                .sources
+                .get(fact.file)
+                .map(|source| variable_names(source.slice(fact.bytes.clone()))),
+        })
+        .flatten()
+        .collect()
+}
+
+/// The names of the variables `text` refers to, as written: each `${NAME` and `$NAME`, defaults'
+/// own included, but not after a `$$`, which is a literal dollar.
+fn variable_names(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut names = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'$' {
+            at += 1;
+            continue;
+        }
+        let start = match bytes.get(at + 1) {
+            Some(b'$') => {
+                at += 2;
+                continue;
+            }
+            Some(b'{') => at + 2,
+            _ => at + 1,
+        };
+        let length = bytes[start..]
+            .iter()
+            .enumerate()
+            .take_while(|&(i, &b)| {
+                b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+            })
+            .count();
+        if length > 0 {
+            names.push(text[start..start + length].to_owned());
+        }
+        // `start` is past the `$`, so the scan always moves on.
+        at = start + length;
+    }
+    names
 }
 
 /// `text` as a double-quoted YAML scalar.
@@ -273,6 +329,31 @@ mod tests {
                 "\"${A_B_PORT:-1}:1\"",
                 "\"${A_B_PORT_2:-2}:2\"",
             ]
+        );
+    }
+
+    #[test]
+    fn a_variable_a_port_already_uses_is_taken() {
+        let texts = new_texts(
+            "services:\n  db:\n    ports:\n      - \"${DB_PORT:-5432}:5432\"\n      - \"6543:6543\"\n",
+        );
+        assert_eq!(texts, ["\"${DB_PORT_2:-6543}:6543\""]);
+        // Without a default, in long syntax, as `$NAME`, and in a later service's port, too.
+        let texts = new_texts(
+            "services:\n  web:\n    ports:\n      - \"8080:80\"\n      - target: 81\n        published: \"${WEB_PORT}\"\n  api:\n    ports:\n      - \"$API_PORT:80\"\n      - \"127.0.0.1:${X:-${API_PORT_2:-1}}:2\"\n      - \"9000:90\"\n  cache:\n    ports:\n      - \"6379:6379\"\n",
+        );
+        assert_eq!(
+            texts,
+            [
+                "\"${WEB_PORT_2:-8080}:80\"",
+                "\"${API_PORT_3:-9000}:90\"",
+                "\"${CACHE_PORT:-6379}:6379\"",
+            ]
+        );
+        // `$$` is a literal dollar, not a variable.
+        assert_eq!(
+            variable_names("$$DB_PORT${A}$B${C:-${D:-1}}$"),
+            ["A", "B", "C", "D"]
         );
     }
 
