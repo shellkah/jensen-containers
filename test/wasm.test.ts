@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AnalyzeResult } from "../src/backend";
 import { loadBackend } from "./support/wasm-host";
 
@@ -48,4 +50,35 @@ test("analyze runs in backend.wasm on the horus-like layout", async () => {
     "unprovided_variable",
   ]);
   expect(backend.reads).toEqual(["infra/local/docker-compose.yml"]);
+});
+
+test("the tools run in backend.wasm on a worktree copy", async () => {
+  const root = mkdtempSync(join(tmpdir(), "containers-"));
+  try {
+    const worktree = join(root, ".jensen", "worktrees", "feat-x");
+    mkdirSync(worktree, { recursive: true });
+    cpSync(new URL("../fixtures/horus-like", import.meta.url).pathname, worktree, {
+      recursive: true,
+    });
+    const backend = await loadBackend("backend.wasm", root);
+    const checkout = ".jensen/worktrees/feat-x";
+
+    const readiness = backend.call("readiness", {
+      checkout,
+      files: ["infra/local/docker-compose.yml"],
+    }) as { ok: { text: string } };
+    const text = readiness.ok.text;
+    expect(text.split("\n")[0]).toBe(
+      "Readiness of infra/local/docker-compose.yml in .jensen/worktrees/feat-x: 3 problems stop copies of this stack from running side by side.",
+    );
+    expect(text).toContain(
+      `Fix: replace "127.0.0.1:5432:5432" with "127.0.0.1:\${DB_PORT:-5432}:5432".`,
+    );
+
+    // The Compose file isn't at the checkout root, so the agent is told to pass files.
+    const topology = backend.call("topology", { checkout }) as { ok: { text: string } };
+    expect(topology.ok.text).toStartWith("No Compose file at the root of .jensen/worktrees/feat-x");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

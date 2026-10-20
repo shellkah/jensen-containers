@@ -73,7 +73,7 @@ pub fn readiness_text(project: &Project, findings: &[Finding], checkout: &Checko
     let items = items(findings);
     let shown = &items[..items.len().min(MAX_ITEMS)];
 
-    let mut header = format!("Readiness of {}", project.model.files.join(", "));
+    let mut header = format!("Readiness of {}", named_files(project));
     if !checkout.root().is_empty() {
         header.push_str(&format!(" in {}", checkout.root()));
     }
@@ -279,11 +279,27 @@ fn name_line(project: &Project, checkout: &Checkout) -> String {
     }
 }
 
+/// The files the texts name, comma separated: the ones read or, when nothing could be read, the
+/// ones the load errors name, each once, in order.
+fn named_files(project: &Project) -> String {
+    if !project.model.files.is_empty() {
+        return project.model.files.join(", ");
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for error in &project.errors {
+        if !names.contains(&error.file.as_str()) {
+            names.push(&error.file);
+        }
+    }
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join(", ")
+    }
+}
+
 fn files_line(project: &Project, checkout: &Checkout) -> String {
-    let files = match project.model.files.as_slice() {
-        [] => "none".to_owned(),
-        files => files.join(", "),
-    };
+    let files = named_files(project);
     if checkout.root().is_empty() {
         format!("Files: {files}.")
     } else {
@@ -660,6 +676,34 @@ mod tests {
             format!(
                 "Readiness of compose.yaml: nothing in the files stops copies of this stack from running side by side.\n{expected}\nNext: fix the load errors above, then call readiness again."
             )
+        );
+    }
+
+    #[test]
+    fn nothing_read_names_the_files_that_failed() {
+        let primary = Checkout::primary();
+        let files = MemFiles::default();
+        let paths = ["a.yml".to_owned(), "b.yml".to_owned()];
+        let project = load_project(&files, &primary, &paths);
+        assert!(project.model.files.is_empty());
+        assert!(project.errors.len() >= 2, "{:?}", project.errors);
+
+        let readiness = readiness_of(&project, &primary);
+        assert!(
+            readiness.starts_with("Readiness of a.yml, b.yml: "),
+            "{readiness}"
+        );
+        let topology = topology_text(&project, &primary);
+        assert!(topology.contains("\nFiles: a.yml, b.yml.\n"), "{topology}");
+
+        // A file with several errors is named once, the others in order.
+        let mut project = project;
+        let again = project.errors[0].clone();
+        project.errors.push(again);
+        let readiness = readiness_of(&project, &primary);
+        assert!(
+            readiness.starts_with("Readiness of a.yml, b.yml: "),
+            "{readiness}"
         );
     }
 

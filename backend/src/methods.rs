@@ -1,12 +1,14 @@
 //! The backend's methods: what Jensen's plugin can ask of the wasm program.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::compose::load_project;
+use crate::compose::{Project, load_project};
 use crate::files::ReadFile;
-use crate::model::AnalyzeResult;
+use crate::model::{AnalyzeResult, Finding};
 use crate::paths::{CHECKOUT_REFUSED, Checkout, file_path};
+use crate::render::{no_compose_file_text, readiness_text, topology_text};
 use crate::rules::readiness;
+use crate::tools::{ToolInput, ToolLoad, load_for_tool, tool_findings};
 
 /// Loads the Compose files of `paths`, relative to the checkout root, into the project model.
 /// Findings are the readiness rules' on that project, `same_project_name` included: the backend
@@ -41,6 +43,37 @@ pub fn analyze_method(files: &dyn ReadFile, input: Value) -> Result<Value, Strin
     let checkout = Checkout::parse(checkout)?;
     serde_json::to_value(analyze(files, &checkout, &paths))
         .map_err(|error| format!("the result can't be written as json: {error}"))
+}
+
+/// `topology` as an agent calls it: `{ checkout?, files? }` in, `{ text }` out.
+pub fn topology_method(files: &dyn ReadFile, input: Value) -> Result<Value, String> {
+    answer(files, &input, |project, _, checkout| {
+        topology_text(project, checkout)
+    })
+}
+
+/// `readiness` as an agent calls it: `{ checkout?, files? }` in, `{ text }` out.
+pub fn readiness_method(files: &dyn ReadFile, input: Value) -> Result<Value, String> {
+    answer(files, &input, |project, findings, checkout| {
+        readiness_text(project, findings, checkout)
+    })
+}
+
+/// Parses the input, loads the project and writes the text `render` makes of it.
+fn answer(
+    files: &dyn ReadFile,
+    input: &Value,
+    render: impl FnOnce(&Project, &[Finding], &Checkout) -> String,
+) -> Result<Value, String> {
+    let input = ToolInput::parse(input)?;
+    let text = match load_for_tool(files, &input) {
+        ToolLoad::NoComposeFile => no_compose_file_text(&input.checkout),
+        ToolLoad::Loaded(project) => {
+            let findings = tool_findings(&project, &input.checkout);
+            render(&project, &findings, &input.checkout)
+        }
+    };
+    Ok(json!({ "text": text }))
 }
 
 #[cfg(test)]
@@ -116,6 +149,88 @@ mod tests {
             analyze_method(&files, json!({ "files": ["."] })).unwrap_err(),
             "\".\" names the checkout root, not a Compose file"
         );
+    }
+
+    const HORUS: &str = include_str!("../../fixtures/horus-like/infra/local/docker-compose.yml");
+
+    fn horus_in_a_worktree() -> MemFiles {
+        MemFiles::from([(
+            ".jensen/worktrees/feat-x/infra/local/docker-compose.yml",
+            HORUS,
+        )])
+    }
+
+    #[test]
+    fn topology_and_readiness_answer_text() {
+        let files = horus_in_a_worktree();
+        let input = json!({
+            "checkout": ".jensen/worktrees/feat-x",
+            "files": ["infra/local/docker-compose.yml"],
+        });
+
+        let topology = topology_method(&files, input.clone()).unwrap();
+        assert_eq!(topology.as_object().unwrap().len(), 1);
+        let topology = topology["text"].as_str().unwrap();
+        assert!(
+            topology.starts_with("Compose project \"local\", named after its folder infra/local,"),
+            "{topology}"
+        );
+
+        let readiness = readiness_method(&files, input).unwrap();
+        assert_eq!(readiness.as_object().unwrap().len(), 1);
+        let readiness = readiness["text"].as_str().unwrap();
+        assert!(readiness.starts_with("Readiness of infra/local/docker-compose.yml in .jensen/worktrees/feat-x: 3 problems stop copies of this stack from running side by side.\n"), "{readiness}");
+        assert!(
+            readiness.contains(
+                "Fix: replace \"127.0.0.1:5432:5432\" with \"127.0.0.1:${DB_PORT:-5432}:5432\"."
+            ),
+            "{readiness}"
+        );
+    }
+
+    #[test]
+    fn a_checkout_with_no_compose_file_is_told_to_pass_files() {
+        let files = horus_in_a_worktree();
+        let input = json!({ "checkout": ".jensen/worktrees/feat-x" });
+        for method in [topology_method, readiness_method] {
+            let reply = method(&files, input.clone()).unwrap();
+            assert!(
+                reply["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("No Compose file at the root of .jensen/worktrees/feat-x"),
+                "{reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_input_errors_are_errors() {
+        let files = MemFiles::default();
+        for method in [topology_method, readiness_method] {
+            for input in [
+                json!({ "checkout": "../x" }),
+                json!({ "checkout": 3 }),
+                json!({ "files": ["../x.yml"] }),
+                json!({ "files": "compose.yaml" }),
+            ] {
+                assert!(method(&files, input.clone()).is_err(), "{input}");
+            }
+        }
+        assert_eq!(
+            readiness_method(&files, json!({ "checkout": "/etc" })).unwrap_err(),
+            crate::paths::CHECKOUT_REFUSED
+        );
+    }
+
+    #[test]
+    fn readiness_names_a_file_that_could_not_be_read() {
+        let files = MemFiles::default();
+        let reply = readiness_method(&files, json!({ "files": ["missing.yml"] })).unwrap();
+        let text = reply["text"].as_str().unwrap();
+        assert!(text.starts_with("Readiness of missing.yml: "), "{text}");
+        assert!(text.contains("\nCould not load missing.yml"), "{text}");
+        assert!(!text.contains("Readiness of :"), "{text}");
     }
 
     #[test]

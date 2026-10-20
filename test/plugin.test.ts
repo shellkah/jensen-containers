@@ -10,6 +10,38 @@ test("loads headless and reports ready", async () => {
   host.close();
 });
 
+test("declares exactly the topology and readiness tools", () => {
+  const tools =
+    (pkg.jensen as { tools?: { name: string; description: string; inputSchema: unknown }[] })
+      .tools ?? [];
+  expect(tools.map((tool) => tool.name)).toEqual(["topology", "readiness"]);
+  const schema = {
+    type: "object",
+    properties: {
+      checkout: {
+        type: "string",
+        description:
+          "Your worktree, relative to the project root, such as .jensen/worktrees/<name>. Leave it out to read the primary checkout.",
+      },
+      files: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Compose files relative to the checkout root, such as infra/local/docker-compose.yml: the -f files of one Compose project, merged in order. Leave it out to use compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml at the checkout root.",
+      },
+    },
+    additionalProperties: false,
+  };
+  for (const tool of tools) expect(tool.inputSchema).toEqual(schema);
+  expect(tools[0]?.description).toBe(
+    "Describe this project's container stack in a few lines, from its Compose files: services, ports, volumes, networks, links and variables with no default. Pass checkout (your worktree) so it reads your copy's files, and files when the Compose files aren't at the checkout root. It reads files only and doesn't show what is running.",
+  );
+  expect(tools[1]?.description).toBe(
+    "List what stops copies of this project's stack from running side by side: fixed host ports, container_name, volumes or networks with fixed names, one project name for every checkout, and variables nothing provides when Run starts the stack, each with the exact edit that fixes it when an edit can. Pass checkout (your worktree) so a fix you make on your branch clears its finding, and files when the Compose files aren't at the checkout root.",
+  );
+  expect(validatePackage(pkg)).toEqual([]);
+});
+
 test("package.json passes the SDK's validator and asks for the index's permissions", () => {
   expect(validatePackage(pkg)).toEqual([]);
   expect(pkg.jensen.permissions).toEqual({

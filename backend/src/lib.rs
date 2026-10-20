@@ -16,10 +16,17 @@ pub mod source;
 pub mod tools;
 pub mod yaml;
 
-/// Registers the backend's methods: `analyze`, which loads Compose files into the project model.
+/// Registers the backend's methods: `analyze`, which loads Compose files into the project model,
+/// and the agent tools `topology` and `readiness`.
 pub fn register(backend: &mut Backend) {
     backend.method("analyze", |input| {
         methods::analyze_method(&files::HostFiles, input)
+    });
+    backend.method("topology", |input| {
+        methods::topology_method(&files::HostFiles, input)
+    });
+    backend.method("readiness", |input| {
+        methods::readiness_method(&files::HostFiles, input)
     });
 }
 
