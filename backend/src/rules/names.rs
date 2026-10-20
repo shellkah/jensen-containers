@@ -5,11 +5,12 @@ use std::collections::HashSet;
 
 use crate::compose::{EntryFact, Project, ResourceFact, ResourceKind};
 use crate::edits::remove_entries;
-use crate::model::{Affects, Finding, RuleId};
+use crate::model::{Affects, Finding, RuleId, SourceRef};
 
 /// One finding per `container_name` as written: one an anchor or `extends` gives several services
 /// is one finding, named after the service that writes it. A name holding a variable nothing
-/// provides isn't fixed, so it is no finding. The edit removes the entry's line.
+/// provides isn't fixed, so it is no finding. The edit removes the entry's line, unless the entry
+/// is reached through an anchor (see [`owns`]).
 pub fn container_name(project: &Project) -> Vec<Finding> {
     let names = &project.facts.container_names;
     let mut written = HashSet::new();
@@ -29,6 +30,15 @@ pub fn container_name(project: &Project) -> Vec<Finding> {
         let Some(service) = super::writer(project, source, fact.key.start, &readers) else {
             continue;
         };
+        let owner = project
+            .model
+            .services
+            .iter()
+            .find(|node| node.name == service)
+            .map(|node| &node.source);
+        let edit = owns(project, owner, &[fact])
+            .then(|| remove_entries(source, &[fact], "Remove container_name".to_owned()))
+            .flatten();
         findings.push(Finding {
             rule: RuleId::ContainerName,
             service: Some(service.to_owned()),
@@ -40,7 +50,7 @@ pub fn container_name(project: &Project) -> Vec<Finding> {
             lead: false,
             source: source.source_ref(fact.value.start),
             span: Some(source.span(fact.value.clone())),
-            edit: remove_entries(source, &[fact], "Remove container_name".to_owned()),
+            edit,
         });
     }
     findings
@@ -48,7 +58,8 @@ pub fn container_name(project: &Project) -> Vec<Finding> {
 
 /// One finding per top-level volume or network with a fixed `name:` or `external:`, at whichever
 /// of the two is written first. A `name:` holding a variable nothing provides isn't fixed. The
-/// edit removes the fixed entries, when they are in one file and each stands alone on its line.
+/// edit removes the fixed entries, when they are in one file, each stands alone on its line, and
+/// none is reached through an anchor (see [`owns`]).
 pub fn shared_fixed_name(project: &Project) -> Vec<Finding> {
     project
         .facts
@@ -74,6 +85,10 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
         ResourceKind::Network => ("network", &project.model.networks),
     };
     let n = &resource.name;
+    let node = nodes.iter().find(|node| node.name == *n);
+    let edit = owns(project, node.map(|node| &node.source), &fixed)
+        .then(|| remove_entries(source, &fixed, format!("Give each copy its own {noun}")))
+        .flatten();
     let message = if external.is_some() {
         // The edit removes a name: entry only when it is a fixed mark; so does the wording, edit
         // or not.
@@ -92,9 +107,7 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
         }
     } else {
         // The model's name, as the files merge it; the entry's own text should it be missing.
-        let x = nodes
-            .iter()
-            .find(|node| node.name == *n)
+        let x = node
             .and_then(|node| node.fixed_name.clone())
             .unwrap_or_else(|| first.text.clone());
         match resource.kind {
@@ -114,7 +127,24 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
         lead: false,
         source: source.source_ref(first.value.start),
         span: Some(source.span(first.value.clone())),
-        edit: remove_entries(source, &fixed, format!("Give each copy its own {noun}")),
+        edit,
+    })
+}
+
+/// Whether every one of `entries` is the owner's own, the owner's key being at `owner`: in another
+/// file, or after the owner's key line. An entry in the owner's file at or before that line is
+/// reached through `<<:` or an alias, since an anchor always comes before its aliases: removing it
+/// would empty the anchor for everything merging it. Not without an owner.
+fn owns(project: &Project, owner: Option<&SourceRef>, entries: &[&EntryFact]) -> bool {
+    let Some(owner) = owner else {
+        return false;
+    };
+    entries.iter().all(|entry| {
+        project.sources.get(entry.file).is_some_and(|source| {
+            source.path != owner.file
+                || usize::try_from(owner.line)
+                    .is_ok_and(|line| source.line_of(entry.key.start) > line)
+        })
     })
 }
 
@@ -250,6 +280,33 @@ mod tests {
             assert_eq!(findings.len(), 1, "{text:?}");
             assert!(findings[0].edit.is_none(), "{text:?}");
         }
+    }
+
+    #[test]
+    fn an_entry_reached_through_an_anchor_has_no_edit() {
+        // Removing the anchor's line would empty it for every resource merging it.
+        let project = one(
+            "x-external: &external\n  external: true\nvolumes:\n  a:\n    <<: *external\n    name: a\n  b:\n    <<: *external\n    name: b\n",
+        );
+        assert!(project.errors.is_empty(), "{:?}", project.errors);
+        let findings = shared_fixed_name(&project);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|finding| finding.edit.is_none()));
+        // A container_name merged into two services from an anchor under an `x-` key.
+        let project = one(
+            "x-db: &db\n  image: pg\n  container_name: app-db\nservices:\n  db:\n    <<: *db\n  replica:\n    <<: *db\n",
+        );
+        let findings = container_name(&project);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].edit.is_none());
+        // An extends base's own entry, written under its key, still gets its edit.
+        let text = "services:\n  web:\n    extends:\n      service: base\n  base:\n    image: nginx\n    container_name: app-web\n";
+        let findings = container_name(&one(text));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            apply(text, findings[0].edit.as_ref().unwrap()),
+            "services:\n  web:\n    extends:\n      service: base\n  base:\n    image: nginx\n"
+        );
     }
 
     #[test]
