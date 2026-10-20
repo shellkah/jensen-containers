@@ -6,9 +6,11 @@ mod support;
 
 use containers::compose::{Project, ResourceKind, load_project};
 use containers::model::{
-    Edge, EdgeKind, MountKind, NameOrigin, ResourceNode, ServiceNode, SourceRef, VolumeMount,
+    Edge, EdgeKind, MountKind, NameOrigin, ResourceNode, RuleId, ServiceNode, SourceRef,
+    VolumeMount,
 };
 use containers::paths::Checkout;
+use containers::rules::readiness;
 
 /// The project name of a Compose file at the root of the primary checkout: the folder's name,
 /// which the backend can't see there.
@@ -103,6 +105,14 @@ fn resources(nodes: &[ResourceNode]) -> Vec<(&str, Option<&str>, bool)> {
         .collect()
 }
 
+/// The rule of each readiness finding, in the order `analyze` gives them.
+fn rules(project: &Project) -> Vec<RuleId> {
+    readiness(project)
+        .iter()
+        .map(|finding| finding.rule)
+        .collect()
+}
+
 fn unresolved(project: &Project) -> Vec<&str> {
     project
         .unresolved
@@ -143,6 +153,7 @@ fn root_file() {
         ]
     );
     assert!(project.unresolved.is_empty());
+    assert_eq!(rules(&project), [RuleId::FixedHostPort]);
 }
 
 #[test]
@@ -203,6 +214,18 @@ fn horus_like_subfolder() {
         project.facts.first_file.as_deref(),
         Some("infra/local/docker-compose.yml")
     );
+    assert_eq!(
+        rules(&project),
+        [
+            RuleId::FixedHostPort,
+            RuleId::SameProjectName,
+            RuleId::UnprovidedVariable,
+            RuleId::UnprovidedVariable,
+            RuleId::UnprovidedVariable,
+            RuleId::UnprovidedVariable,
+            RuleId::UnprovidedVariable
+        ]
+    );
 }
 
 #[test]
@@ -230,6 +253,8 @@ fn several_files() {
     assert_eq!(api.source, at("compose.yaml", 1, 2));
     let files: Vec<_> = project.facts.ports.iter().map(|port| port.file).collect();
     assert_eq!(files, [0, 1]);
+    // API_PORT for the first port, API_PORT_9229 for the second.
+    assert_eq!(rules(&project), [RuleId::FixedHostPort; 2]);
 }
 
 #[test]
@@ -243,6 +268,7 @@ fn profiles() {
     let debug = service(&project, "debug");
     assert_eq!(debug.image.as_deref(), Some("busybox"));
     assert_eq!(debug.profiles, ["debug"]);
+    assert_eq!(rules(&project), []);
 }
 
 #[test]
@@ -255,6 +281,8 @@ fn env_files_are_never_read() {
     assert_eq!(ports(app), [(None, Some("${APP_PORT}"), "80", false)]);
     assert_eq!(unresolved(&project), ["APP_PORT"]);
     assert_eq!(project.unresolved[0].source, at("compose.yaml", 5, 9));
+    // APP_PORT, whose value the git-ignored .env would give.
+    assert_eq!(rules(&project), [RuleId::UnprovidedVariable]);
 }
 
 #[test]
@@ -268,6 +296,7 @@ fn host_app() {
     assert_eq!(ports(db), [(None, Some("5432"), "5432", false)]);
     assert!(project.unresolved.is_empty());
     assert!(project.model.edges.is_empty());
+    assert_eq!(rules(&project), []);
 }
 
 #[test]
@@ -291,6 +320,7 @@ fn container_name() {
         (Some("db"), "container_name", "app-db")
     );
     assert_eq!(source.line_of(fact.key.start), 3);
+    assert_eq!(rules(&project), [RuleId::ContainerName]);
 }
 
 #[test]
@@ -340,6 +370,7 @@ fn external_volumes() {
             edge("app", "cache", EdgeKind::Volume)
         ]
     );
+    assert_eq!(rules(&project), [RuleId::SharedFixedName; 3]);
 }
 
 #[test]
@@ -359,4 +390,6 @@ fn include_and_extends() {
     assert_eq!(worker.image.as_deref(), Some("app:dev"));
     assert!(worker.ports.is_empty());
     assert_eq!(worker.source, at("services/worker.yml", 1, 2));
+    // The 8000:8000 api publishes.
+    assert_eq!(rules(&project), [RuleId::FixedHostPort]);
 }

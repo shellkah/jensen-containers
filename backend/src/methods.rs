@@ -6,14 +6,17 @@ use crate::compose::load_project;
 use crate::files::ReadFile;
 use crate::model::AnalyzeResult;
 use crate::paths::{CHECKOUT_REFUSED, Checkout, normalize};
+use crate::rules::readiness;
 
 /// Loads the Compose files of `paths`, relative to the checkout root, into the project model.
-/// Findings stay empty until the readiness rules fill them.
+/// Findings are the readiness rules' on that project, `same_project_name` included: the backend
+/// can't list folders, so whoever shows them drops it when the project has no worktree folder.
 pub fn analyze(files: &dyn ReadFile, checkout: &Checkout, paths: &[String]) -> AnalyzeResult {
     let project = load_project(files, checkout, paths);
+    let findings = readiness(&project);
     AnalyzeResult {
         model: project.model,
-        findings: Vec::new(),
+        findings,
         unresolved: project.unresolved,
         errors: project.errors,
     }
@@ -78,7 +81,21 @@ mod tests {
             reply["model"]["services"][0]["ports"][0]["host"],
             json!("8080")
         );
-        assert_eq!(reply["findings"], json!([]));
+        // The fixed port, then the folder name every checkout shares.
+        let rules: Vec<_> = reply["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| finding["rule"].clone())
+            .collect();
+        assert_eq!(
+            rules,
+            [json!("fixed_host_port"), json!("same_project_name")]
+        );
+        assert_eq!(
+            reply["findings"][1]["source"],
+            json!({ "file": "infra/compose.yaml", "line": 0, "column": 0 })
+        );
         assert_eq!(reply["errors"], json!([]));
     }
 

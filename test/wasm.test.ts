@@ -38,6 +38,14 @@ test("analyze runs in backend.wasm on the horus-like layout", async () => {
     "TIMESCALEDB_VERSION",
     "PGVECTOR_VERSION",
   ]);
-  expect(ok.findings).toEqual([]);
+  expect(ok.findings.map((finding) => finding.rule)).toEqual([
+    "fixed_host_port",
+    "same_project_name",
+    "unprovided_variable",
+    "unprovided_variable",
+    "unprovided_variable",
+    "unprovided_variable",
+    "unprovided_variable",
+  ]);
   expect(backend.reads).toEqual(["infra/local/docker-compose.yml"]);
 });

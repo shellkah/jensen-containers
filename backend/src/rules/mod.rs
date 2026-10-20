@@ -2,6 +2,7 @@
 
 pub mod names;
 pub mod ports;
+pub mod project;
 
 use crate::compose::Project;
 use crate::model::Finding;
@@ -13,6 +14,8 @@ pub fn readiness(project: &Project) -> Vec<Finding> {
     let mut findings = ports::fixed_host_port(project);
     findings.extend(names::container_name(project));
     findings.extend(names::shared_fixed_name(project));
+    findings.extend(project::same_project_name(project));
+    findings.extend(project::unprovided_variable(project));
     let files = &project.model.files;
     // `sort_by_key` is stable: findings at one position keep the order their rule gave them.
     findings.sort_by_key(|finding| {
@@ -93,7 +96,7 @@ mod tests {
     #[test]
     fn every_rule_runs_and_rules_come_in_their_order() {
         let project = one(
-            "volumes:\n  cache:\n    name: app-cache\nservices:\n  db:\n    container_name: app-db\n    image: pg\n    ports:\n      - \"5432:5432\"\n",
+            "name: app\nvolumes:\n  cache:\n    name: app-cache\nservices:\n  db:\n    container_name: app-db\n    image: pg:${TAG}\n    ports:\n      - \"5432:5432\"\n",
         );
         let rules: Vec<_> = readiness(&project)
             .iter()
@@ -104,7 +107,30 @@ mod tests {
             [
                 RuleId::FixedHostPort,
                 RuleId::ContainerName,
-                RuleId::SharedFixedName
+                RuleId::SharedFixedName,
+                RuleId::SameProjectName,
+                RuleId::UnprovidedVariable
+            ]
+        );
+    }
+
+    #[test]
+    fn findings_come_in_rule_order_then_position() {
+        // The variables come before the port in the file, the rule order still puts the port first.
+        let project = one(
+            "name: app\nservices:\n  web:\n    image: web:${WEB_TAG}\n  db:\n    image: pg:${DB_TAG}\n    ports:\n      - \"5432:5432\"\n",
+        );
+        let found: Vec<_> = readiness(&project)
+            .iter()
+            .map(|finding| (finding.rule, finding.source.line))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (RuleId::FixedHostPort, 7),
+                (RuleId::SameProjectName, 0),
+                (RuleId::UnprovidedVariable, 3),
+                (RuleId::UnprovidedVariable, 5)
             ]
         );
     }

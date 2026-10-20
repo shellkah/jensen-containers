@@ -150,7 +150,7 @@ fn owns(project: &Project, owner: Option<&SourceRef>, entries: &[&EntryFact]) ->
 
 /// Whether `entry`'s value holds a variable nothing provides: a use of one in the entry's file,
 /// inside the value's bytes.
-fn unprovided(project: &Project, entry: &EntryFact) -> bool {
+pub(super) fn unprovided(project: &Project, entry: &EntryFact) -> bool {
     project.facts.variables.iter().any(|variable| {
         variable.file == entry.file
             && variable.bytes.start >= entry.value.start
