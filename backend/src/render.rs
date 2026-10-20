@@ -21,13 +21,17 @@ const NOT_RUNNING: &str = "This describes what the files declare, not what is ru
 /// nothing provides, and what couldn't be loaded, ending in the next step.
 pub fn topology_text(project: &Project, checkout: &Checkout) -> String {
     let model = &project.model;
+    if model.files.is_empty() {
+        return nothing_loaded_topology(project, checkout);
+    }
     let mut lines = vec![name_line(project, checkout), files_line(project, checkout)];
 
     let count = model.services.len();
-    lines.push(format!(
-        "{count} {}:",
-        if count == 1 { "service" } else { "services" }
-    ));
+    lines.push(match count {
+        0 => "No services.".to_owned(),
+        1 => "1 service:".to_owned(),
+        count => format!("{count} services:"),
+    });
     lines.extend(model.services.iter().take(MAX_SERVICES).map(service_line));
     if count > MAX_SERVICES {
         lines.push(format!(
@@ -63,6 +67,18 @@ pub fn topology_text(project: &Project, checkout: &Checkout) -> String {
         "Next: call readiness with the same arguments to see what stops copies of this stack from running side by side."
             .to_owned(),
     );
+    lines.join("\n")
+}
+
+/// The topology of files that could not be read: no name and no services to tell of, only why.
+fn nothing_loaded_topology(project: &Project, checkout: &Checkout) -> String {
+    let mut lines = vec![format!(
+        "Topology of {}: the files could not be read.",
+        named_files(project)
+    )];
+    lines.extend(project.errors.iter().map(load_error_line));
+    lines.extend(checkout_hint(checkout));
+    lines.push("Next: fix the load errors above, then call topology again.".to_owned());
     lines.join("\n")
 }
 
@@ -119,6 +135,9 @@ pub fn readiness_text(project: &Project, findings: &[Finding], checkout: &Checko
     }
 
     lines.extend(project.errors.iter().map(load_error_line));
+    if project.model.files.is_empty() {
+        lines.extend(checkout_hint(checkout));
+    }
     lines.push(match (first_edit, items.is_empty(), project.errors.is_empty()) {
         (Some((number, file)), _, _) => format!(
             "Next: apply fix {number} in {file}, then call readiness again with the same arguments."
@@ -137,12 +156,22 @@ pub fn readiness_text(project: &Project, findings: &[Finding], checkout: &Checko
 /// What to tell an agent when no Compose file could be found at the root of `checkout`.
 pub fn no_compose_file_text(checkout: &Checkout) -> String {
     let place = match checkout.root() {
-        "" => "the project",
+        "" => "this checkout",
         root => root,
     };
+    let hint = checkout_hint(checkout).map_or(String::new(), |hint| format!("{hint}\n"));
     format!(
-        "No Compose file at the root of {place} (looked for compose.yaml, compose.yml, docker-compose.yaml and docker-compose.yml).\nNext: find the Compose files with your file tools and pass them in files, such as {{\"files\": [\"infra/local/docker-compose.yml\"]}}."
+        "No Compose file at the root of {place} (looked for compose.yaml, compose.yml, docker-compose.yaml and docker-compose.yml).\n{hint}Next: find the Compose files with your file tools and pass them in files, such as {{\"files\": [\"infra/local/docker-compose.yml\"]}}."
     )
+}
+
+/// For a call that named another checkout and read nothing: Jensen reads the caller's own
+/// checkout already, so a worktree agent that named its own folder doubled the path.
+fn checkout_hint(checkout: &Checkout) -> Option<String> {
+    let root = checkout.root();
+    (!root.is_empty()).then(|| {
+        format!("If you are working in {root}, leave checkout out: Jensen already reads your own checkout.")
+    })
 }
 
 /// One numbered entry of the readiness list.
@@ -273,7 +302,7 @@ fn name_line(project: &Project, checkout: &Checkout) -> String {
                     "Compose project \"{value}\", named after its folder {folder}, so it is the same in every checkout."
                 )
             } else if checkout.root().is_empty() {
-                "Compose project named after the project's folder.".to_owned()
+                "Compose project named after the folder of the checkout it runs from.".to_owned()
             } else {
                 format!("Compose project \"{value}\", named after the checkout's folder.")
             }
@@ -598,11 +627,11 @@ mod tests {
     fn no_compose_file_text_asks_for_files() {
         assert_eq!(
             no_compose_file_text(&Checkout::primary()),
-            "No Compose file at the root of the project (looked for compose.yaml, compose.yml, docker-compose.yaml and docker-compose.yml).\nNext: find the Compose files with your file tools and pass them in files, such as {\"files\": [\"infra/local/docker-compose.yml\"]}."
+            "No Compose file at the root of this checkout (looked for compose.yaml, compose.yml, docker-compose.yaml and docker-compose.yml).\nNext: find the Compose files with your file tools and pass them in files, such as {\"files\": [\"infra/local/docker-compose.yml\"]}."
         );
-        assert!(
-            no_compose_file_text(&feat_x())
-                .starts_with("No Compose file at the root of .jensen/worktrees/feat-x (looked for")
+        assert_eq!(
+            no_compose_file_text(&feat_x()),
+            "No Compose file at the root of .jensen/worktrees/feat-x (looked for compose.yaml, compose.yml, docker-compose.yaml and docker-compose.yml).\nIf you are working in .jensen/worktrees/feat-x, leave checkout out: Jensen already reads your own checkout.\nNext: find the Compose files with your file tools and pass them in files, such as {\"files\": [\"infra/local/docker-compose.yml\"]}."
         );
     }
 
@@ -705,15 +734,58 @@ mod tests {
             readiness.ends_with("\nNext: fix the load errors above, then call readiness again."),
             "{readiness}"
         );
+        // The primary checkout has no other checkout to leave out.
+        assert!(!readiness.contains("leave checkout out"), "{readiness}");
         let topology = topology_text(&project, &primary);
-        assert!(topology.contains("\nFiles: a.yml, b.yml.\n"), "{topology}");
-        let missing = load_project(&files, &feat_x(), &["missing.yml".to_owned()]);
         assert!(
-            readiness_of(&missing, &feat_x()).starts_with(
+            topology.starts_with(
+                "Topology of a.yml, b.yml: the files could not be read.\nCould not load a.yml"
+            ),
+            "{topology}"
+        );
+        assert!(
+            topology.ends_with("\nNext: fix the load errors above, then call topology again."),
+            "{topology}"
+        );
+        assert!(!topology.contains("leave checkout out"), "{topology}");
+        // Nothing was read, so no name, no count and no summary of what the files declare.
+        for line in [
+            "Compose project",
+            "services:",
+            "Volumes:",
+            "Links:",
+            "Files:",
+        ] {
+            assert!(!topology.contains(line), "{line}: {topology}");
+        }
+
+        let hint = "If you are working in .jensen/worktrees/feat-x, leave checkout out: Jensen already reads your own checkout.";
+        let missing = load_project(&files, &feat_x(), &["missing.yml".to_owned()]);
+        let readiness = readiness_of(&missing, &feat_x());
+        assert!(
+            readiness.starts_with(
                 "Readiness of missing.yml in .jensen/worktrees/feat-x: the files could not be read.\n"
             ),
-            "{}",
-            readiness_of(&missing, &feat_x())
+            "{readiness}"
+        );
+        assert!(
+            readiness.ends_with(&format!(
+                "\n{hint}\nNext: fix the load errors above, then call readiness again."
+            )),
+            "{readiness}"
+        );
+        let topology = topology_text(&missing, &feat_x());
+        assert!(
+            topology.starts_with(
+                "Topology of missing.yml: the files could not be read.\nCould not load missing.yml"
+            ),
+            "{topology}"
+        );
+        assert!(
+            topology.ends_with(&format!(
+                "\n{hint}\nNext: fix the load errors above, then call topology again."
+            )),
+            "{topology}"
         );
 
         // A file with several errors is named once, the others in order.
@@ -758,13 +830,41 @@ mod tests {
         let at_root = load(&primary, "compose.yaml", root);
         assert_eq!(
             topology_text(&at_root, &primary).lines().next(),
-            Some("Compose project named after the project's folder.")
+            Some("Compose project named after the folder of the checkout it runs from.")
         );
         let in_worktree = load(&feat_x(), "compose.yaml", root);
         assert_eq!(
             topology_text(&in_worktree, &feat_x()).lines().next(),
             Some("Compose project \"feat-x\", named after the checkout's folder.")
         );
+    }
+
+    #[test]
+    fn a_project_with_no_services_says_so() {
+        let primary = Checkout::primary();
+        let project = load(&primary, "compose.yaml", "services: {}\n");
+        assert!(project.errors.is_empty(), "{:?}", project.errors);
+        let text = topology_text(&project, &primary);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "Files: compose.yaml.");
+        assert_eq!(lines[2], "No services.");
+        assert_eq!(
+            lines[3],
+            "Volumes: none. Networks: only the default network."
+        );
+        assert!(!text.contains("0 services"), "{text}");
+    }
+
+    #[test]
+    fn the_hint_comes_only_with_a_checkout_that_read_nothing() {
+        let hint = "leave checkout out";
+        // Files that read need no hint, in a checkout or not.
+        let project = horus_like();
+        assert!(!topology_text(&project, &feat_x()).contains(hint));
+        assert!(!readiness_of(&project, &feat_x()).contains(hint));
+        // Nothing read and no checkout: no hint either, and the same for the missing file text.
+        assert!(!no_compose_file_text(&Checkout::primary()).contains(hint));
+        assert!(no_compose_file_text(&feat_x()).contains(hint));
     }
 
     #[test]

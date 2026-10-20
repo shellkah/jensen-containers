@@ -216,7 +216,54 @@ mod tests {
                     .starts_with("No Compose file at the root of .jensen/worktrees/feat-x"),
                 "{reply}"
             );
+            assert!(
+                reply["text"].as_str().unwrap().contains("\nIf you are working in .jensen/worktrees/feat-x, leave checkout out: Jensen already reads your own checkout.\nNext: "),
+                "{reply}"
+            );
         }
+    }
+
+    #[test]
+    fn no_checkout_and_no_compose_file_names_this_checkout_without_a_hint() {
+        let files = MemFiles::default();
+        for method in [topology_method, readiness_method] {
+            let reply = method(&files, json!({})).unwrap();
+            let text = reply["text"].as_str().unwrap();
+            assert!(
+                text.starts_with("No Compose file at the root of this checkout (looked for"),
+                "{text}"
+            );
+            assert!(!text.contains("leave checkout out"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_checkout_that_doubles_the_callers_path_reads_nothing_and_is_told_so() {
+        // Jensen roots the read in the caller's worktree, so the worktree's own path leads nowhere.
+        let files = MemFiles::default();
+        let input = json!({
+            "checkout": ".jensen/worktrees/feat-x",
+            "files": ["infra/local/docker-compose.yml"],
+        });
+        let hint = "If you are working in .jensen/worktrees/feat-x, leave checkout out: Jensen already reads your own checkout.";
+        let reply = topology_method(&files, input.clone()).unwrap();
+        let topology = reply["text"].as_str().unwrap();
+        assert!(
+            topology.starts_with(
+                "Topology of infra/local/docker-compose.yml: the files could not be read.\n"
+            ),
+            "{topology}"
+        );
+        assert!(
+            topology.contains(&format!("\n{hint}\nNext: ")),
+            "{topology}"
+        );
+        let reply = readiness_method(&files, input).unwrap();
+        let readiness = reply["text"].as_str().unwrap();
+        assert!(
+            readiness.contains(&format!("\n{hint}\nNext: ")),
+            "{readiness}"
+        );
     }
 
     #[test]

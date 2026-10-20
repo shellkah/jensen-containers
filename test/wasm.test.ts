@@ -78,6 +78,9 @@ test("the tools run in backend.wasm on a worktree copy", async () => {
     // The Compose file isn't at the checkout root, so the agent is told to pass files.
     const topology = backend.call("topology", { checkout }) as { ok: { text: string } };
     expect(topology.ok.text).toStartWith("No Compose file at the root of .jensen/worktrees/feat-x");
+    expect(topology.ok.text).toContain(
+      "\nIf you are working in .jensen/worktrees/feat-x, leave checkout out: Jensen already reads your own checkout.\nNext: ",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
