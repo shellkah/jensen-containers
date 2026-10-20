@@ -78,6 +78,8 @@ pub fn readiness_text(project: &Project, findings: &[Finding], checkout: &Checko
         header.push_str(&format!(" in {}", checkout.root()));
     }
     header.push_str(&match items.len() {
+        // Nothing read is nothing judged: the load errors below say why.
+        0 if project.model.files.is_empty() => ": the files could not be read.".to_owned(),
         0 => ": nothing in the files stops copies of this stack from running side by side."
             .to_owned(),
         1 => ": 1 problem stops copies of this stack from running side by side.".to_owned(),
@@ -688,13 +690,28 @@ mod tests {
         assert!(project.model.files.is_empty());
         assert!(project.errors.len() >= 2, "{:?}", project.errors);
 
+        // Nothing was read, so the header doesn't claim the files hold nothing.
         let readiness = readiness_of(&project, &primary);
         assert!(
-            readiness.starts_with("Readiness of a.yml, b.yml: "),
+            readiness.starts_with(
+                "Readiness of a.yml, b.yml: the files could not be read.\nCould not load a.yml"
+            ),
+            "{readiness}"
+        );
+        assert!(
+            readiness.ends_with("\nNext: fix the load errors above, then call readiness again."),
             "{readiness}"
         );
         let topology = topology_text(&project, &primary);
         assert!(topology.contains("\nFiles: a.yml, b.yml.\n"), "{topology}");
+        let missing = load_project(&files, &feat_x(), &["missing.yml".to_owned()]);
+        assert!(
+            readiness_of(&missing, &feat_x()).starts_with(
+                "Readiness of missing.yml in .jensen/worktrees/feat-x: the files could not be read.\n"
+            ),
+            "{}",
+            readiness_of(&missing, &feat_x())
+        );
 
         // A file with several errors is named once, the others in order.
         let mut project = project;
