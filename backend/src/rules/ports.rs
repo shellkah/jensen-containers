@@ -92,32 +92,17 @@ pub fn port_variable(service: &str, container: &str, first: bool) -> String {
     }
 }
 
-/// The service that writes `fact`: among the services reaching the same written port, the one
-/// whose key is in the port's file on the last line at or before the port's; when none is (an
-/// anchor under an `x-` key, or a base outside the project), the first in model order.
+/// The service that writes `fact`, among the services reaching the same written port (see
+/// [`super::writer`]); they come in model order, so with none before it, the first in model order.
 fn writer<'p>(project: &'p Project, source: &SourceText, fact: &'p PortFact) -> &'p str {
-    let line = source.line_of(fact.bytes.start);
-    let mut readers = project
+    let readers: Vec<&str> = project
         .facts
         .ports
         .iter()
         .filter(|other| other.file == fact.file && other.bytes == fact.bytes)
-        .map(|other| other.service.as_str());
-    let mut best: Option<(&str, u32)> = None;
-    for reader in readers.clone() {
-        let Some(service) = project.model.services.iter().find(|s| s.name == reader) else {
-            continue;
-        };
-        let at = service.source.line;
-        let before =
-            service.source.file == source.path && usize::try_from(at).is_ok_and(|at| at <= line);
-        if before && best.is_none_or(|(_, best)| at > best) {
-            best = Some((reader, at));
-        }
-    }
-    best.map(|(reader, _)| reader)
-        .or_else(|| readers.next())
-        .unwrap_or(&fact.service)
+        .map(|other| other.service.as_str())
+        .collect();
+    super::writer(project, source, fact.bytes.start, &readers).unwrap_or(&fact.service)
 }
 
 /// The container port of `fact`, interpolated, from the binding the model holds for it.
