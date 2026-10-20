@@ -5,12 +5,14 @@ use std::collections::HashSet;
 
 use crate::compose::{EntryFact, Project, ResourceFact, ResourceKind};
 use crate::edits::remove_entries;
-use crate::model::{Affects, Finding, RuleId, SourceRef};
+use crate::model::{Affects, Finding, RuleId};
+use crate::source::SourceText;
 
 /// One finding per `container_name` as written: one an anchor or `extends` gives several services
 /// is one finding, named after the service that writes it. A name holding a variable nothing
-/// provides isn't fixed, so it is no finding. The edit removes the entry's line, unless the entry
-/// is reached through an anchor (see [`owns`]).
+/// provides isn't fixed, so it is no finding. The edit removes the entry's line, unless that
+/// would leave a null something merges or needs (see [`owns`]): the entry is reached through an
+/// anchor, or it is all its service sets.
 pub fn container_name(project: &Project) -> Vec<Finding> {
     let names = &project.facts.container_names;
     let mut written = HashSet::new();
@@ -30,13 +32,7 @@ pub fn container_name(project: &Project) -> Vec<Finding> {
         let Some(service) = super::writer(project, source, fact.key.start, &readers) else {
             continue;
         };
-        let owner = project
-            .model
-            .services
-            .iter()
-            .find(|node| node.name == service)
-            .map(|node| &node.source);
-        let edit = owns(project, owner, &[fact])
+        let edit = owns(project, service, &[fact], true)
             .then(|| remove_entries(source, &[fact], "Remove container_name".to_owned()))
             .flatten();
         findings.push(Finding {
@@ -59,7 +55,7 @@ pub fn container_name(project: &Project) -> Vec<Finding> {
 /// One finding per top-level volume or network with a fixed `name:` or `external:`, at whichever
 /// of the two is written first. A `name:` holding a variable nothing provides isn't fixed. The
 /// edit removes the fixed entries, when they are in one file, each stands alone on its line, and
-/// none is reached through an anchor (see [`owns`]).
+/// each sits right under the resource's own key, which no anchor marks (see [`owns`]).
 pub fn shared_fixed_name(project: &Project) -> Vec<Finding> {
     project
         .facts
@@ -86,7 +82,7 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
     };
     let n = &resource.name;
     let node = nodes.iter().find(|node| node.name == *n);
-    let edit = owns(project, node.map(|node| &node.source), &fixed)
+    let edit = owns(project, n, &fixed, false)
         .then(|| remove_entries(source, &fixed, format!("Give each copy its own {noun}")))
         .flatten();
     let message = if external.is_some() {
@@ -131,21 +127,90 @@ fn shared(project: &Project, resource: &ResourceFact) -> Option<Finding> {
     })
 }
 
-/// Whether every one of `entries` is the owner's own, the owner's key being at `owner`: in another
-/// file, or after the owner's key line. An entry in the owner's file at or before that line is
-/// reached through `<<:` or an alias, since an anchor always comes before its aliases: removing it
-/// would empty the anchor for everything merging it. Not without an owner.
-fn owns(project: &Project, owner: Option<&SourceRef>, entries: &[&EntryFact]) -> bool {
-    let Some(owner) = owner else {
-        return false;
-    };
+/// Whether removing `entries` leaves no null behind that something merges or needs. Each entry's
+/// parent key line, in the entry's own file (see [`parent_line`]), must be `owner`'s key, with no
+/// anchor, alias or tag after it: an entry under another key, such as an `x-` anchor's, reaches
+/// the owner through `<<:`, and removing it from an anchored mapping would leave the anchor null
+/// for everything merging it. With `keep_one`, the parent mapping must also keep another entry, so
+/// a service doesn't become null; a null top-level volume or network is fine.
+fn owns(project: &Project, owner: &str, entries: &[&EntryFact], keep_one: bool) -> bool {
     entries.iter().all(|entry| {
         project.sources.get(entry.file).is_some_and(|source| {
-            source.path != owner.file
-                || usize::try_from(owner.line)
-                    .is_ok_and(|line| source.line_of(entry.key.start) > line)
+            let line = source.line_of(entry.key.start);
+            let column = entry
+                .key
+                .start
+                .saturating_sub(source.line_bytes(line).start);
+            parent_line(source, line, column).is_some_and(|parent| {
+                plain_key(content(source, parent)) == Some(owner)
+                    && (!keep_one || has_sibling(source, parent, line, column))
+            })
         })
     })
+}
+
+/// The line of `source` holding the parent key of the key at `column` of `line`: the nearest
+/// earlier line, blank and comment lines skipped, indented less than `column`.
+fn parent_line(source: &SourceText, line: usize, column: usize) -> Option<usize> {
+    (0..line).rev().find(|&above| {
+        let text = content(source, above);
+        !skipped(text) && indent(text) < column
+    })
+}
+
+/// Whether the mapping under `parent` holds a key at `column` on another line than `line`: one
+/// of its lines up to the next line indented no more than `parent`, not a `- ` sequence item.
+fn has_sibling(source: &SourceText, parent: usize, line: usize, column: usize) -> bool {
+    let parent_indent = indent(content(source, parent));
+    (parent + 1..)
+        .take_while(|&below| !source.line_bytes(below).is_empty())
+        .map(|below| (below, content(source, below)))
+        .filter(|(_, text)| !skipped(text))
+        .take_while(|(_, text)| indent(text) > parent_indent)
+        .any(|(below, text)| {
+            let item = text.trim_start_matches(' ');
+            below != line && indent(text) == column && item != "-" && !item.starts_with("- ")
+        })
+}
+
+/// The key a block mapping line starts with, plain or quoted, when nothing after its `:` is an
+/// anchor (`&`), an alias (`*`) or a tag (`!`). None for any other line.
+fn plain_key(text: &str) -> Option<&str> {
+    let text = text.trim_start_matches(' ');
+    let (key, rest) = match text.chars().next() {
+        Some(quote @ ('"' | '\'')) => {
+            let inner = &text[1..];
+            let end = inner.find(quote)?;
+            (&inner[..end], inner[end + 1..].trim_start_matches(' '))
+        }
+        _ => {
+            let colon = text.char_indices().find_map(|(at, c)| {
+                let next = text[at + c.len_utf8()..].chars().next();
+                (c == ':' && next.is_none_or(|next| next == ' ' || next == '\t')).then_some(at)
+            })?;
+            (text[..colon].trim_end(), &text[colon..])
+        }
+    };
+    let rest = rest.strip_prefix(':')?;
+    (!rest.contains(['&', '*', '!'])).then_some(key)
+}
+
+/// The text of `line` without its line break.
+fn content(source: &SourceText, line: usize) -> &str {
+    let text = source.slice(source.line_bytes(line));
+    text.strip_suffix('\n')
+        .map_or(text, |rest| rest.strip_suffix('\r').unwrap_or(rest))
+}
+
+/// The spaces `text` starts with.
+fn indent(text: &str) -> usize {
+    text.len() - text.trim_start_matches(' ').len()
+}
+
+/// Whether `text` is a blank or comment line, which never holds a key.
+fn skipped(text: &str) -> bool {
+    let text = text.trim();
+    text.is_empty() || text.starts_with('#')
 }
 
 /// Whether `entry`'s value holds a variable nothing provides: a use of one in the entry's file,
@@ -307,6 +372,135 @@ mod tests {
             apply(text, findings[0].edit.as_ref().unwrap()),
             "services:\n  web:\n    extends:\n      service: base\n  base:\n    image: nginx\n"
         );
+    }
+
+    /// The project the `-f` files `files` make, in their order, loaded without errors.
+    fn load(files: &[(&str, &str)]) -> Project {
+        let paths: Vec<String> = files.iter().map(|(path, _)| (*path).to_owned()).collect();
+        let texts = files
+            .iter()
+            .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+            .collect();
+        let project = load_project(&MemFiles(texts), &Checkout::primary(), &paths);
+        assert!(project.errors.is_empty(), "{:?}", project.errors);
+        project
+    }
+
+    #[test]
+    fn an_anchored_resource_merged_by_another_has_no_edit() {
+        // Removing external: would leave `a: &ext` null, and b would merge null.
+        let project =
+            one("volumes:\n  a: &ext\n    external: true\n  b:\n    <<: *ext\n    driver: local\n");
+        assert!(project.errors.is_empty(), "{:?}", project.errors);
+        let findings = shared_fixed_name(&project);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.starts_with("Volume a is external, ")),
+            "{findings:?}"
+        );
+        assert!(findings.iter().all(|finding| finding.edit.is_none()));
+    }
+
+    #[test]
+    fn an_anchor_in_a_later_file_has_no_edit() {
+        // Removing container_name would leave `x-common: &common` null for db to merge.
+        let project = load(&[
+            (
+                "a.yaml",
+                "services:\n  db:\n    image: pg\n  web:\n    image: nginx\n",
+            ),
+            (
+                "b.yaml",
+                "x-common: &common\n  container_name: shared\nservices:\n  db:\n    <<: *common\n",
+            ),
+        ]);
+        let findings = container_name(&project);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].source.file, "b.yaml");
+        assert!(findings[0].edit.is_none());
+    }
+
+    #[test]
+    fn a_service_set_only_by_its_container_name_has_no_edit() {
+        // Removing it would leave `db:` null, which isn't a service.
+        for text in [
+            "services:\n  db:\n    container_name: app-db\n",
+            "services:\n  db:\n    # why\n    container_name: app-db\n  web:\n    image: nginx\n",
+        ] {
+            let project = one(text);
+            let findings = container_name(&project);
+            assert_eq!(findings.len(), 1, "{text:?}");
+            assert!(findings[0].edit.is_none(), "{text:?}");
+        }
+        // The same in an override file.
+        let project = load(&[
+            ("compose.yaml", "services:\n  db:\n    image: pg\n"),
+            (
+                "compose.override.yaml",
+                "services:\n  db:\n    container_name: app-db\n",
+            ),
+        ]);
+        let findings = container_name(&project);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].edit.is_none());
+    }
+
+    #[test]
+    fn a_container_name_with_an_entry_after_it_keeps_its_edit() {
+        let text = "services:\n  db:\n    container_name: app-db\n    # why\n\n    image: pg\n  web:\n    image: nginx\n";
+        let findings = container_name(&one(text));
+        assert_eq!(findings.len(), 1);
+        let fixed = apply(text, findings[0].edit.as_ref().unwrap());
+        assert_eq!(
+            fixed,
+            "services:\n  db:\n    # why\n\n    image: pg\n  web:\n    image: nginx\n"
+        );
+        let fixed = one(&fixed);
+        assert!(fixed.errors.is_empty(), "{:?}", fixed.errors);
+        assert!(container_name(&fixed).is_empty());
+    }
+
+    #[test]
+    fn a_parent_key_counts_only_without_an_anchor_alias_or_tag() {
+        assert_eq!(plain_key("  db:"), Some("db"));
+        assert_eq!(plain_key("  db:  # the database"), Some("db"));
+        assert_eq!(plain_key("  \"db\":"), Some("db"));
+        assert_eq!(plain_key("  'db' :"), Some("db"));
+        assert_eq!(plain_key("  web.v2:"), Some("web.v2"));
+        assert_eq!(plain_key("  a:b:"), Some("a:b"));
+        for line in [
+            "  a: &ext",
+            "  db: !!map",
+            "  db: *base",
+            "  db",
+            "",
+            "  \"db:",
+        ] {
+            assert_eq!(plain_key(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn an_override_naming_a_resource_of_the_base_keeps_its_edit() {
+        let base = "volumes:\n  data:\n    driver: local\nservices:\n  db:\n    image: pg\n";
+        let project = load(&[
+            ("compose.yaml", base),
+            (
+                "compose.override.yaml",
+                "volumes:\n  data:\n    name: shared-data\n",
+            ),
+        ]);
+        let findings = shared_fixed_name(&project);
+        assert_eq!(findings.len(), 1);
+        let edit = findings[0].edit.as_ref().expect("an edit");
+        assert_eq!(edit.file, "compose.override.yaml");
+        let override_text = project.sources.get(1).unwrap().text.clone();
+        let fixed = apply(&override_text, edit);
+        assert_eq!(fixed, "volumes:\n  data:\n");
+        // A null volume is fine: the files still load, and the finding is gone.
+        let fixed = load(&[("compose.yaml", base), ("compose.override.yaml", &fixed)]);
+        assert!(shared_fixed_name(&fixed).is_empty());
     }
 
     #[test]
