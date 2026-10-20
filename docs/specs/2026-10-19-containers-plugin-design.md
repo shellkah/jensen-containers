@@ -230,6 +230,7 @@ Which checkout a tool reads (my call):
 - **The problem.** A plugin tool call carries no caller identity, and `fs` paths are relative to the project root. An agent works in its own worktree, inside the project at `.jensen/worktrees/<name>`.
 - **The fix.** Every tool takes an optional `checkout` argument, the agent's worktree path relative to the project root, and the file tools also take an optional `files` list. The tool descriptions tell agents to pass their checkout, and without one the tool reads the primary checkout. That way a readiness fix the agent makes on its branch clears the finding it sees.
 - **Later.** Once Jensen passes the caller's session and checkout to backend calls (R3), the argument becomes a fallback.
+- **As of Jensen 0.3.** A call from a worktree session already reads that worktree: Jensen roots a plugin tool's file reads in the calling session's checkout. So `checkout` is only for reading another checkout of the project, the tool descriptions tell agents to leave it out, and part of R3 has landed. Because the backend can no longer tell a worktree session from the primary checkout, the tools report `same_project_name` whenever the files call for it.
 - **Verify first.** Check that the plugin's `fs` scopes reach files under `.jensen/worktrees/`. If they don't, that becomes a request.
 
 1. **diagnose** (the main tool). One call answers "what's wrong with my copy":

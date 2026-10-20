@@ -1,6 +1,6 @@
 {
   "name": "containers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "See a project's container stack from its Compose files: a map, readiness checks with suggested edits, and short answers for agents.",
   "author": "shellkah",
