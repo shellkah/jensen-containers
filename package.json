@@ -1,0 +1,89 @@
+{
+  "name": "containers",
+  "version": "0.1.1",
+  "private": true,
+  "description": "See a project's container stack from its Compose files: a map, readiness checks with suggested edits, and short answers for agents.",
+  "author": "shellkah",
+  "type": "module",
+  "scripts": {
+    "build": "jensen-plugin build",
+    "dev": "jensen-plugin dev",
+    "validate": "jensen-plugin validate",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --error-on-warnings .",
+    "test": "bun test ./test",
+    "test:backend": "cargo test --manifest-path backend/Cargo.toml",
+    "check": "make check"
+  },
+  "dependencies": {
+    "@jensen-org/plugin-sdk": "^0.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.3"
+  },
+  "jensen": {
+    "id": "dev.jensen.containers",
+    "displayName": "Containers",
+    "category": "devtools",
+    "repo": "shellkah/jensen-containers",
+    "minAppVersion": "0.3.0",
+    "backend": "backend.wasm",
+    "backendBuild": "cargo build --release --target wasm32-unknown-unknown --manifest-path backend/Cargo.toml && cp backend/target/wasm32-unknown-unknown/release/containers.wasm backend.wasm",
+    "tools": [
+      {
+        "name": "topology",
+        "description": "Describe this project's container stack in a few lines, from its Compose files: services, ports, volumes, networks, links and variables with no default. It reads your own checkout; pass files when the Compose files aren't at the checkout root. It reads files only and doesn't show what is running.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "checkout": {
+              "type": "string",
+              "description": "Another checkout of this project to read, relative to the project root, such as .jensen/worktrees/<name>. Leave it out to read your own checkout: Jensen reads the files of the session that calls the tool."
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Compose files relative to the checkout root, such as infra/local/docker-compose.yml: the -f files of one Compose project, merged in order. Leave it out to use compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml at the checkout root."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "readiness",
+        "description": "List what stops copies of this project's stack from running side by side: fixed host ports, container_name, volumes or networks with fixed names, one project name for every checkout, and variables nothing provides when Run starts the stack, each with the exact edit that fixes it when an edit can. It reads your own checkout, so a fix you make on your branch clears its finding; pass files when the Compose files aren't at the checkout root.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "checkout": {
+              "type": "string",
+              "description": "Another checkout of this project to read, relative to the project root, such as .jensen/worktrees/<name>. Leave it out to read your own checkout: Jensen reads the files of the session that calls the tool."
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Compose files relative to the checkout root, such as infra/local/docker-compose.yml: the -f files of one Compose project, merged in order. Leave it out to use compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml at the checkout root."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "permissions": {
+      "workspace": true,
+      "editor": "write",
+      "graph": true,
+      "backend": true,
+      "fs": [
+        "*.yaml",
+        "*.yml"
+      ]
+    }
+  }
+}

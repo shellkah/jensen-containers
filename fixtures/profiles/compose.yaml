@@ -1,0 +1,6 @@
+services:
+  app:
+    image: app:dev
+  debug:
+    image: busybox
+    profiles: [debug]

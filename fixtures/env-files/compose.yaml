@@ -1,0 +1,6 @@
+services:
+  app:
+    image: app:dev
+    env_file: .env
+    ports:
+      - "${APP_PORT}:80"

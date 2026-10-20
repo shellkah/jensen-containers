@@ -1,0 +1,4 @@
+services:
+  base:
+    image: app:dev
+    environment: { LOG_LEVEL: info }

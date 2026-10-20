@@ -230,6 +230,7 @@ Which checkout a tool reads (my call):
 - **The problem.** A plugin tool call carries no caller identity, and `fs` paths are relative to the project root. An agent works in its own worktree, inside the project at `.jensen/worktrees/<name>`.
 - **The fix.** Every tool takes an optional `checkout` argument, the agent's worktree path relative to the project root, and the file tools also take an optional `files` list. The tool descriptions tell agents to pass their checkout, and without one the tool reads the primary checkout. That way a readiness fix the agent makes on its branch clears the finding it sees.
 - **Later.** Once Jensen passes the caller's session and checkout to backend calls (R3), the argument becomes a fallback.
+- **As of Jensen 0.3.** A call from a worktree session already reads that worktree: Jensen roots a plugin tool's file reads in the calling session's checkout. So `checkout` is only for reading another checkout of the project, the tool descriptions tell agents to leave it out, and part of R3 has landed. Because the backend can no longer tell a worktree session from the primary checkout, the tools report `same_project_name` whenever the files call for it.
 - **Verify first.** Check that the plugin's `fs` scopes reach files under `.jensen/worktrees/`. If they don't, that becomes a request.
 
 1. **diagnose** (the main tool). One call answers "what's wrong with my copy":
@@ -473,7 +474,7 @@ Answered on 2026-10-19:
 Still open:
 - Does Run pass anything else to a Compose stack, such as environment variables for the session's port band? The relayed command suggests not, which makes R5 essential.
 
-The brainstorm mockups are in `docs/superpowers/specs/2026-10-19-containers-mockups/`. They are HTML fragments written for the brainstorm's preview frame, so opened on their own they render with rough styling.
+The brainstorm mockups are in `docs/specs/2026-10-19-containers-mockups/`. They are HTML fragments written for the brainstorm's preview frame, so opened on their own they render with rough styling.
 - `layout.html`: the three layouts.
 - `layout-v2.html`: the two combined layouts.
 - `attention.html`: the chosen layout with the alerts. Its port tooltip is superseded by 6.4.

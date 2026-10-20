@@ -1,0 +1,18 @@
+services:
+  app:
+    image: app:dev
+    volumes:
+      - data:/data
+      - cache:/cache
+    networks: [shared]
+
+volumes:
+  data:
+    external: true
+    name: shared-data
+  cache:
+    name: app-cache
+
+networks:
+  shared:
+    name: shared-net

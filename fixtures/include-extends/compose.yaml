@@ -1,0 +1,7 @@
+include: [services/worker.yml]
+
+services:
+  api:
+    extends: { file: common/base.yml, service: base }
+    ports:
+      - "8000:8000"
