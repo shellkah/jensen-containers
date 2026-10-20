@@ -33,6 +33,22 @@ make build   # the WebAssembly backend and main.js
 
 `make build` adds the `wasm32-unknown-unknown` target to the Rust toolchain if it is missing, and a fresh checkout installs its own dependencies.
 
+## Releasing
+
+GitHub Actions runs two workflows:
+
+- **CI**, on every pull request and every push to `main`: `make check`, then `jensen-plugin publish` with no flags. The run's `release` artifact holds the files a release would ship, and its summary shows the store entry. Pull requests from forks get no secrets, and this workflow needs none.
+- **Release**, on a tag `x.y.z` pushed on `main`: `make check`, then `jensen-plugin publish --release --store-pr` in one job. The release and the store PR come from the same build, so the store entry pins the manifest the release ships.
+
+To release a version:
+
+1. Bump `version` in `package.json` in a pull request, and merge it.
+2. Tag the merged commit with the bare version and push the tag: `git tag 0.1.2 <commit> && git push origin 0.1.2`.
+
+The job stops before building if the tag isn't `package.json`'s version, isn't on `main`, or already has a release. It needs the repository secret `STORE_PR_TOKEN`: a classic personal access token with the `public_repo` scope. That token creates the release, keeps your fork of `jensen-org/plugins-store` in sync, and opens the store PR against its `develop` branch.
+
+If the job fails after the release exists, delete the release with `gh release delete <tag>` (the tag stays), delete the `plugin/dev.jensen.containers-<version>` branch of your fork if it was pushed, and re-run the job.
+
 ## Agent tools
 
 Agents see two tools, named after the plugin's id:
